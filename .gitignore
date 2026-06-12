@@ -1,0 +1,16 @@
+# Go
+/desktop/aiscan
+/desktop/dist/
+*.test
+*.prof
+
+# Browser extension
+/extension/node_modules/
+/extension/dist/
+/extension/web-ext-artifacts/
+
+# OS / editor
+.DS_Store
+*.log
+.idea/
+.vscode/
