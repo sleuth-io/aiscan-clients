@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sleuth-io/aiscan-clients/protocol/capture-config.schema.json",
+  "title": "CaptureConfig",
+  "description": "Server-delivered config that drives the browser extension's capture without shipping a new extension version. Data only — Manifest V3 forbids remotely-hosted code. DRAFT.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "sources"],
+  "properties": {
+    "version": { "type": "string", "description": "config version; lets the client cache and detect changes" },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "watch"],
+        "properties": {
+          "type": { "type": "string", "examples": ["chatgpt-web", "claude-web", "gemini-web"] },
+          "enabled": { "type": "boolean", "default": true, "description": "server kill switch for this source" },
+          "watch": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "URL patterns whose network responses to capture (prefer responses over DOM)"
+          },
+          "extract": {
+            "type": "object",
+            "description": "output field -> path into the captured response; lets capture adapt to site changes via config",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

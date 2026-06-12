@@ -30,7 +30,9 @@ See `README.md` and `docs/transparency.md`.
 
 - `desktop/` — Go binary: CLI verbs + background agent + system tray.
 - `extension/` — WebExtension (Chrome + Firefox), config-driven capture.
-- `protocol/` — shared client↔server contract reference (the server is the source of truth).
+- `protocol/` — the **canonical** client↔server contract (JSON Schema). Clients and the server
+  all validate/generate from these schemas; the shapes are not duplicated anywhere else. Change
+  a shape here, once.
 - `docs/` — public transparency docs.
 
 ## desktop/ (Go) — commands & conventions

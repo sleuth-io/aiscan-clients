@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sleuth-io/aiscan-clients/protocol/upload-request.schema.json",
+  "title": "UploadRequest",
+  "description": "Metadata envelope a client sends with a redacted capture upload. The redacted source data itself rides as a gzipped payload (HTTP body or multipart part) described by `payload`. DRAFT until first end-to-end upload.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["client", "source", "captured_at", "payload"],
+  "properties": {
+    "client": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "version"],
+      "properties": {
+        "kind": { "enum": ["desktop", "extension"] },
+        "version": { "type": "string" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "description": "Which tool the capture came from and its format version, so the server can select the right parser.",
+      "additionalProperties": false,
+      "required": ["type", "format_version"],
+      "properties": {
+        "type": { "type": "string", "examples": ["claude-code", "claude-web", "chatgpt-web", "gemini-web"] },
+        "format_version": { "type": "string" }
+      }
+    },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "redaction": {
+      "type": "object",
+      "description": "What the on-device redaction pass applied, recorded for auditability.",
+      "additionalProperties": false,
+      "properties": {
+        "ruleset_version": { "type": "string" },
+        "applied": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "description": "Describes the redacted source dump carried alongside this envelope.",
+      "additionalProperties": false,
+      "required": ["encoding", "media_type"],
+      "properties": {
+        "encoding": { "const": "gzip" },
+        "media_type": { "type": "string", "examples": ["application/x-ndjson", "application/json"] },
+        "uncompressed_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

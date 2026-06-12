@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sleuth-io/aiscan-clients/protocol/upload-response.schema.json",
+  "title": "UploadResponse",
+  "description": "Server acknowledgement of a capture upload. DRAFT until first end-to-end upload.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "upload_id"],
+  "properties": {
+    "status": { "enum": ["accepted", "rejected"] },
+    "upload_id": { "type": "string", "description": "server-assigned id for this upload" },
+    "message": { "type": "string", "description": "human-readable detail, e.g. a rejection reason" }
+  }
+}
