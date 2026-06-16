@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "aiscan claude.ai spike",
+  "version": "0.0.1",
+  "description": "Spike: pull all your claude.ai conversations and send them to a local aiscan daemon for analysis.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://claude.ai/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js", "scripts": ["background.js"] },
+  "content_scripts": [
+    {
+      "matches": ["https://claude.ai/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "aiscan claude.ai spike"
+  },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "browser_specific_settings": {
+    "gecko": { "id": "aiscan-spike@sleuth.io", "strict_min_version": "115.0" }
+  }
+}

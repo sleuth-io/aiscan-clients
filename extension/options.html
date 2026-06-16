@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>aiscan — settings</title>
+  <style>
+    body { font: 14px system-ui, -apple-system, sans-serif; max-width: 640px; margin: 24px auto; padding: 0 16px; color: #1f2a33; }
+    h1 { font-size: 18px; }
+    label { display: block; font-weight: 600; margin: 16px 0 6px; }
+    textarea { width: 100%; height: 160px; font: 13px/1.5 ui-monospace, Menlo, monospace; padding: 8px; box-sizing: border-box; }
+    input[type=number] { width: 80px; font: 14px system-ui; padding: 4px 6px; }
+    .hint { color: #5b6b76; font-size: 12px; margin-top: 4px; }
+    button { margin-top: 18px; font-size: 14px; padding: 8px 16px; background: #236a91; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+    #status { margin-left: 12px; color: #2e7d32; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>aiscan settings</h1>
+
+  <label for="role">Your role profile</label>
+  <div class="hint">Free text telling the analysis what counts as your <em>work</em> vs <em>personal</em>, so personal
+    sessions are classified out of the report. Same idea as the <code>--role</code> flag.</div>
+  <textarea id="role" placeholder="e.g. CTO at Acme; my work is coding and research on Acme's software. Treat as PERSONAL anything about my side ventures, personal finance, home network, health, or legal matters — even inside a work repo."></textarea>
+
+  <label for="windowDays">Days of history to include</label>
+  <input type="number" id="windowDays" min="0" value="7">
+  <div class="hint">Applies to both claude.ai web sessions and your local Claude Code sessions. 0 = all time.</div>
+
+  <button id="save">Save</button>
+  <span id="status"></span>
+
+  <script src="options.js"></script>
+</body>
+</html>
