@@ -17,7 +17,7 @@ aiscan instance** (`/api/aiscan/ingest`); there is no local Go daemon in the loo
   `chrome.storage`), and (4) POSTs the gzip to `{instance}/api/aiscan/ingest`. The server stores
   it and runs the pipeline on a Celery worker; we get back a run GID and link to its report.
 - **`options.html` / `options.js`** — set the **instance URL** (`http://dev.pulse.sleuth.io` for
-  local dev, `https://app.skills.new` for prod), the role profile, and the history window.
+  local dev, `https://app.skills.new` for prod) and the history window.
 - **`popup.html` / `popup.js`** — leftover trigger/status UI; the on-page button is the real one.
 
 The claude.ai page can't reach the instance directly when it's `http://` (mixed content), and a

@@ -13,10 +13,10 @@
   window.__aiscanInjected = true;
 
   const CONCURRENCY = 5;
-  // Config (role profile + history window) comes from the options page; these
-  // are defaults until it loads from chrome.storage. windowDays scopes which
-  // conversations are sent (0 = all time).
-  let cfg = { windowDays: 7, role: "" };
+  // Config (history window) comes from the options page; this is the default
+  // until it loads from chrome.storage. windowDays scopes which conversations
+  // are sent (0 = all time).
+  let cfg = { windowDays: 7 };
 
   const btn = document.createElement("button");
   function updateLabel() {
@@ -26,7 +26,7 @@
 
   const gear = document.createElement("button");
   gear.textContent = "⚙";
-  gear.title = "aiscan settings (role + window)";
+  gear.title = "aiscan settings (history window)";
   gear.style.cssText =
     "position:fixed;z-index:2147483647;bottom:16px;right:" +
     "calc(16px + 150px);padding:8px 10px;background:#3a3a3f;color:#fff;border:none;" +
@@ -131,7 +131,6 @@
       const resp = await chrome.runtime.sendMessage({
         type: "upload",
         conversations,
-        role: cfg.role,
         windowDays: cfg.windowDays,
       });
       if (resp && resp.ok) {
@@ -168,7 +167,7 @@
     }
   });
 
-  // Load saved config (role + window) from the options page.
+  // Load saved config (history window) from the options page.
   chrome.storage.local.get("config", (d) => {
     if (d && d.config) cfg = Object.assign(cfg, d.config);
     updateLabel();
