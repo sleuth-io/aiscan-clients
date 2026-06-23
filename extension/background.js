@@ -12,7 +12,7 @@
 //
 // There is no local daemon anymore: the extension is the real client.
 
-const DEFAULT_INSTANCE = "http://dev.pulse.sleuth.io";
+const DEFAULT_INSTANCE = "https://app.skills.new";
 const AISCAN_CLIENT_ID = "sleuth-aiscan"; // well-known public client on the server
 const OAUTH_SCOPE = "skills";
 const DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
@@ -44,7 +44,11 @@ function transcodeConversation(conv, capturedAt) {
   const sessionId = conv.uuid;
   if (!sessionId) return "";
   const model = conv.model || "claude-web";
-  const fallbackTs = firstNonEmpty(conv.created_at, conv.updated_at, capturedAt);
+  const fallbackTs = firstNonEmpty(
+    conv.created_at,
+    conv.updated_at,
+    capturedAt,
+  );
 
   const lines = [];
   const messages = Array.isArray(conv.chat_messages) ? conv.chat_messages : [];
@@ -68,13 +72,21 @@ function transcodeConversation(conv, capturedAt) {
       // is dropped (tool calls are read off the assistant turn).
       const out = [];
       for (const c of blocks) {
-        if (c.type === "text" && c.text) out.push({ type: "text", text: c.text });
-        else if (c.type === "thinking" && c.thinking) out.push({ type: "thinking", text: c.thinking });
-        else if (c.type === "tool_use") out.push({ type: "tool_use", name: c.name, input: c.input });
+        if (c.type === "text" && c.text)
+          out.push({ type: "text", text: c.text });
+        else if (c.type === "thinking" && c.thinking)
+          out.push({ type: "thinking", text: c.thinking });
+        else if (c.type === "tool_use")
+          out.push({ type: "tool_use", name: c.name, input: c.input });
       }
       if (out.length === 0 && m.text) out.push({ type: "text", text: m.text });
       entry.type = "assistant";
-      entry.message = { id: firstNonEmpty(m.uuid, sessionId + "-" + i), model, role: "assistant", content: out };
+      entry.message = {
+        id: firstNonEmpty(m.uuid, sessionId + "-" + i),
+        model,
+        role: "assistant",
+        content: out,
+      };
     }
     lines.push(JSON.stringify(entry));
   });
@@ -157,7 +169,12 @@ async function gzip(bytes) {
 
 async function getCachedToken(instanceUrl) {
   const { auth } = await chrome.storage.local.get("auth");
-  if (auth && auth.instanceUrl === instanceUrl && auth.accessToken && auth.expiresAt > Date.now() + 60_000) {
+  if (
+    auth &&
+    auth.instanceUrl === instanceUrl &&
+    auth.accessToken &&
+    auth.expiresAt > Date.now() + 60_000
+  ) {
     return auth.accessToken;
   }
   return null;
@@ -165,21 +182,34 @@ async function getCachedToken(instanceUrl) {
 
 async function storeToken(instanceUrl, accessToken, expiresIn) {
   const expiresAt = Date.now() + Math.max(0, (expiresIn || 3600) - 60) * 1000;
-  await chrome.storage.local.set({ auth: { instanceUrl, accessToken, expiresAt } });
+  await chrome.storage.local.set({
+    auth: { instanceUrl, accessToken, expiresAt },
+  });
 }
 
 async function startDeviceAuthorization(instanceUrl) {
   const res = await fetch(instanceUrl + "/api/oauth/device-authorization/", {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ client_id: AISCAN_CLIENT_ID, scope: OAUTH_SCOPE }),
+    body: new URLSearchParams({
+      client_id: AISCAN_CLIENT_ID,
+      scope: OAUTH_SCOPE,
+    }),
   });
   const text = await res.text();
-  if (!res.ok) throw new Error("device authorization failed (" + res.status + "): " + text);
+  if (!res.ok)
+    throw new Error(
+      "device authorization failed (" + res.status + "): " + text,
+    );
   return JSON.parse(text);
 }
 
-async function pollForToken(instanceUrl, deviceCode, intervalSec, expiresInSec) {
+async function pollForToken(
+  instanceUrl,
+  deviceCode,
+  intervalSec,
+  expiresInSec,
+) {
   const deadline = Date.now() + (expiresInSec || 600) * 1000;
   let interval = (intervalSec || 5) * 1000;
   while (Date.now() < deadline) {
@@ -202,7 +232,9 @@ async function pollForToken(instanceUrl, deviceCode, intervalSec, expiresInSec) 
     }
     throw new Error("authorization failed: " + (data.error || res.status));
   }
-  throw new Error("authorization timed out — approve the request and scan again");
+  throw new Error(
+    "authorization timed out — approve the request and scan again",
+  );
 }
 
 async function ensureToken(instanceUrl, tabId) {
@@ -214,10 +246,21 @@ async function ensureToken(instanceUrl, tabId) {
   // Open the approval page and tell the content script to surface the code.
   if (verifyUrl) chrome.tabs.create({ url: verifyUrl });
   if (tabId != null) {
-    chrome.tabs.sendMessage(tabId, { type: "authPrompt", userCode: auth.user_code, verifyUrl }).catch(() => {});
+    chrome.tabs
+      .sendMessage(tabId, {
+        type: "authPrompt",
+        userCode: auth.user_code,
+        verifyUrl,
+      })
+      .catch(() => {});
   }
 
-  const token = await pollForToken(instanceUrl, auth.device_code, auth.interval, auth.expires_in);
+  const token = await pollForToken(
+    instanceUrl,
+    auth.device_code,
+    auth.interval,
+    auth.expires_in,
+  );
   await storeToken(instanceUrl, token.access_token, token.expires_in);
   return token.access_token;
 }
@@ -229,7 +272,9 @@ async function ensureToken(instanceUrl, tabId) {
 async function upload(msg, tabId) {
   const instanceUrl = await getInstanceUrl();
   const capturedAt = new Date().toISOString();
-  const conversations = Array.isArray(msg.conversations) ? msg.conversations : [];
+  const conversations = Array.isArray(msg.conversations)
+    ? msg.conversations
+    : [];
 
   const files = [];
   conversations.forEach((conv, i) => {
@@ -238,23 +283,32 @@ async function upload(msg, tabId) {
     const name = "projects/claude-ai/" + (conv.uuid || "conv-" + i) + ".jsonl";
     files.push({ name, data: jsonl });
   });
-  if (!files.length) throw new Error("nothing to upload (no transcodable conversations)");
+  if (!files.length)
+    throw new Error("nothing to upload (no transcodable conversations)");
 
   const mtime = Math.floor(Date.parse(capturedAt) / 1000);
   const body = await gzip(buildTar(files, mtime));
 
   const token = await ensureToken(instanceUrl, tabId);
   const windowDays = msg.windowDays || 0;
-  const url = instanceUrl + "/api/aiscan/ingest?source=claude-code&window_days=" + windowDays;
+  const url =
+    instanceUrl +
+    "/api/aiscan/ingest?source=claude-code&window_days=" +
+    windowDays;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/gzip", authorization: "Bearer " + token },
+    headers: {
+      "content-type": "application/gzip",
+      authorization: "Bearer " + token,
+    },
     body,
   });
   const text = await res.text();
   if (res.status === 401) {
     await chrome.storage.local.remove("auth"); // force re-auth next time
-    throw new Error("unauthorized — the token was rejected; scan again to re-authorize");
+    throw new Error(
+      "unauthorized — the token was rejected; scan again to re-authorize",
+    );
   }
   if (!res.ok) throw new Error("ingest " + res.status + ": " + text);
 
@@ -262,7 +316,9 @@ async function upload(msg, tabId) {
   try {
     gid = JSON.parse(text).run || "";
   } catch (_) {}
-  const reportUrl = gid ? instanceUrl + "/aiscan/" + gid : instanceUrl + "/aiscan";
+  const reportUrl = gid
+    ? instanceUrl + "/aiscan/" + gid
+    : instanceUrl + "/aiscan";
   return { ok: true, reportUrl, sessions: files.length };
 }
 
@@ -275,7 +331,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const tabId = sender && sender.tab && sender.tab.id;
     upload(msg, tabId)
       .then((r) => sendResponse(r))
-      .catch((e) => sendResponse({ ok: false, error: e && e.message ? e.message : String(e) }));
+      .catch((e) =>
+        sendResponse({
+          ok: false,
+          error: e && e.message ? e.message : String(e),
+        }),
+      );
     return true; // keep the channel open for the async response
   }
   return false;

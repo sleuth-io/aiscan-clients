@@ -2,7 +2,7 @@
 // chrome.storage. content.js reads the window and ships it with each upload;
 // background.js reads instanceUrl to know where to authorize and upload.
 
-const DEFAULT_INSTANCE = "http://dev.pulse.sleuth.io";
+const DEFAULT_INSTANCE = "https://app.skills.new";
 
 const instanceEl = document.getElementById("instanceUrl");
 const windowEl = document.getElementById("windowDays");
@@ -21,7 +21,10 @@ function flash(msg) {
 
 document.getElementById("save").addEventListener("click", () => {
   const config = {
-    instanceUrl: (instanceEl.value.trim() || DEFAULT_INSTANCE).replace(/\/+$/, ""),
+    instanceUrl: (instanceEl.value.trim() || DEFAULT_INSTANCE).replace(
+      /\/+$/,
+      "",
+    ),
     windowDays: Math.max(0, parseInt(windowEl.value, 10) || 0),
   };
   chrome.storage.local.set({ config }, () => flash("Saved."));

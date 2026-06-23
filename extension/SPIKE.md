@@ -31,7 +31,7 @@ background worker, which holds host permissions for the instance.
 2. Load the extension **unpacked**, logged in to claude.ai in the same browser:
    - **Firefox:** `about:debugging` → This Firefox → Load Temporary Add-on → pick `manifest.json`.
    - **Chrome:** `chrome://extensions` → Developer mode → Load unpacked → pick this folder.
-3. Open the extension **options** and set the instance URL (defaults to `http://dev.pulse.sleuth.io`).
+3. Open the extension **options** and set the instance URL (defaults to `https://app.skills.new`).
 4. **Refresh the claude.ai tab** (content scripts only inject on load), then click the orange
    **"aiscan: scan N"** button bottom-right. On the first scan an approval tab opens — authorize
    the extension once; the upload then continues automatically and the panel links to the report.
