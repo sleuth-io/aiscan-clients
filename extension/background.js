@@ -40,7 +40,7 @@ function firstNonEmpty(...vals) {
   return "";
 }
 
-function transcodeConversation(conv, capturedAt) {
+function transcodeClaudeConversation(conv, capturedAt) {
   const sessionId = conv.uuid;
   if (!sessionId) return "";
   const model = conv.model || "claude-web";
@@ -90,6 +90,123 @@ function transcodeConversation(conv, capturedAt) {
     }
     lines.push(JSON.stringify(entry));
   });
+  return lines.length ? lines.join("\n") + "\n" : "";
+}
+
+// ---------------------------------------------------------------------------
+// chatgpt.com -> Claude Code JSONL transcode. ChatGPT stores a conversation as
+// a TREE: `mapping` is a map of node id -> { message, parent, children } and
+// `current_node` is the leaf of the active branch (edits/regenerations create
+// sibling branches). We linearize the active branch by walking parent pointers
+// from `current_node` to the root, then map each node onto the same Claude Code
+// event lines the claude.ai transcoder emits, so the server's detector counts
+// tool/MCP usage identically.
+// ---------------------------------------------------------------------------
+
+function chatgptActiveBranch(conv) {
+  const mapping = conv.mapping || {};
+  const order = [];
+  const seen = new Set();
+  let nodeId = conv.current_node;
+  while (nodeId && mapping[nodeId] && !seen.has(nodeId)) {
+    seen.add(nodeId);
+    order.push(mapping[nodeId]);
+    nodeId = mapping[nodeId].parent;
+  }
+  order.reverse(); // root -> leaf
+  return order.map((n) => n && n.message).filter(Boolean);
+}
+
+// ChatGPT create_time is float epoch seconds; the JSONL wants an ISO string.
+function epochToIso(sec, fallback) {
+  if (typeof sec !== "number" || !isFinite(sec)) return fallback;
+  return new Date(sec * 1000).toISOString();
+}
+
+function transcodeChatGPTConversation(conv, capturedAt) {
+  const sessionId = conv.conversation_id || conv.id;
+  if (!sessionId) return "";
+  const convModel = conv.default_model_slug || "chatgpt";
+
+  const lines = [];
+  for (const m of chatgptActiveBranch(conv)) {
+    const role = m.author && m.author.role;
+    const meta = m.metadata || {};
+    // Skip the hidden system/scaffolding turns ChatGPT injects (custom
+    // instructions, tool boilerplate) — they're empty and not user content.
+    if (role === "system" || meta.is_visually_hidden_from_conversation)
+      continue;
+
+    const content = m.content || {};
+    const ctype = content.content_type;
+    const parts = Array.isArray(content.parts) ? content.parts : [];
+    const textOf = () =>
+      parts
+        .map((p) => (typeof p === "string" ? p : ""))
+        .filter(Boolean)
+        .join("\n");
+    const ts = epochToIso(m.create_time, capturedAt);
+
+    if (role === "user") {
+      const text = textOf();
+      if (!text) continue;
+      lines.push(
+        JSON.stringify({
+          timestamp: ts,
+          sessionId,
+          cwd: "chatgpt.com",
+          type: "user",
+          message: { role: "user", content: text },
+        }),
+      );
+      continue;
+    }
+
+    if (role === "assistant") {
+      const out = [];
+      if (ctype === "thoughts") {
+        // gpt-5 reasoning summaries: parts are { summary, content } objects.
+        const t = parts
+          .map((p) =>
+            typeof p === "string" ? p : (p && (p.content || p.summary)) || "",
+          )
+          .filter(Boolean)
+          .join("\n");
+        if (t) out.push({ type: "thinking", text: t });
+      } else if (ctype === "code" && m.recipient && m.recipient !== "all") {
+        // A tool call: `recipient` names the tool (e.g. api_tool.call_tool,
+        // web.search, python); `content.text` is the JSON args.
+        let input;
+        try {
+          input = JSON.parse(content.text);
+        } catch (_) {
+          input = { raw: content.text || "" };
+        }
+        out.push({ type: "tool_use", name: m.recipient, input });
+      } else {
+        // Plain answer text (content_type "text"), or a code block addressed to
+        // the user — either way surface it as text.
+        const t = ctype === "code" ? content.text || "" : textOf();
+        if (t) out.push({ type: "text", text: t });
+      }
+      if (!out.length) continue;
+      lines.push(
+        JSON.stringify({
+          timestamp: ts,
+          sessionId,
+          cwd: "chatgpt.com",
+          type: "assistant",
+          message: {
+            id: m.id || sessionId,
+            model: meta.model_slug || convModel,
+            role: "assistant",
+            content: out,
+          },
+        }),
+      );
+    }
+    // role "tool" (tool results) is dropped, mirroring the claude.ai transcoder.
+  }
   return lines.length ? lines.join("\n") + "\n" : "";
 }
 
@@ -289,11 +406,25 @@ async function upload(msg, tabId) {
     ? msg.conversations
     : [];
 
+  // The content script tags each batch with its provider so we transcode with
+  // the matching mapper, file the sessions under a provider-specific dir, and
+  // report the right origin to the server (which records it as the session
+  // "source" for the report's "Where it happened" — these are web sessions, not
+  // the Claude Code CLI).
+  const isChatGPT = msg.provider === "chatgpt";
+  const transcode = isChatGPT
+    ? transcodeChatGPTConversation
+    : transcodeClaudeConversation;
+  const dir = isChatGPT ? "projects/chatgpt/" : "projects/claude-ai/";
+  const source = isChatGPT ? "chatgpt-web" : "claude-web";
+  const idOf = (conv) =>
+    isChatGPT ? conv.conversation_id || conv.id : conv.uuid;
+
   const files = [];
   conversations.forEach((conv, i) => {
-    const jsonl = transcodeConversation(conv, capturedAt);
+    const jsonl = transcode(conv, capturedAt);
     if (!jsonl) return;
-    const name = "projects/claude-ai/" + (conv.uuid || "conv-" + i) + ".jsonl";
+    const name = dir + (idOf(conv) || "conv-" + i) + ".jsonl";
     files.push({ name, data: jsonl });
   });
   if (!files.length)
@@ -306,7 +437,9 @@ async function upload(msg, tabId) {
   const windowDays = msg.windowDays || 0;
   const url =
     instanceUrl +
-    "/api/aiscan/ingest?source=claude-code&window_days=" +
+    "/api/aiscan/ingest?source=" +
+    encodeURIComponent(source) +
+    "&window_days=" +
     windowDays;
   const res = await fetch(url, {
     method: "POST",
@@ -335,32 +468,57 @@ async function upload(msg, tabId) {
   return { ok: true, reportUrl, sessions: files.length };
 }
 
-// The whole UI (scan button, settings ⚙, status panel) lives on the claude.ai
-// page itself, injected by content.js — there is no popup. Clicking the toolbar
-// icon just focuses an existing claude.ai tab, or opens one if none is around.
-chrome.action.onClicked.addListener(async () => {
-  const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
-  if (tabs.length) {
-    await chrome.tabs.update(tabs[0].id, { active: true });
-    if (tabs[0].windowId != null)
-      await chrome.windows.update(tabs[0].windowId, { focused: true });
-  } else {
-    await chrome.tabs.create({ url: "https://claude.ai/" });
-  }
-});
+// Register the worker's event listeners only in the extension runtime. Under
+// Node (the unit tests below `require` this file) `chrome` is absent, so the
+// pure service functions can be exercised without the WebExtension APIs.
+if (typeof chrome !== "undefined" && chrome.runtime) {
+  // The whole UI (scan button, settings ⚙, status panel) lives on the page
+  // itself, injected by content.js — there is no popup. Clicking the toolbar
+  // icon just focuses an existing claude.ai/chatgpt.com tab, or opens one.
+  chrome.action.onClicked.addListener(async () => {
+    const tabs = await chrome.tabs.query({
+      url: ["https://claude.ai/*", "https://chatgpt.com/*"],
+    });
+    // Some matched tabs (e.g. devtools) can lack a usable id; fall through to
+    // opening a fresh tab rather than throwing on an undefined id.
+    const tab = tabs.find((t) => t && t.id != null);
+    if (tab) {
+      await chrome.tabs.update(tab.id, { active: true });
+      if (tab.windowId != null)
+        await chrome.windows.update(tab.windowId, { focused: true });
+    } else {
+      await chrome.tabs.create({ url: "https://claude.ai/" });
+    }
+  });
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === "upload") {
-    const tabId = sender && sender.tab && sender.tab.id;
-    upload(msg, tabId)
-      .then((r) => sendResponse(r))
-      .catch((e) =>
-        sendResponse({
-          ok: false,
-          error: e && e.message ? e.message : String(e),
-        }),
-      );
-    return true; // keep the channel open for the async response
-  }
-  return false;
-});
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg && msg.type === "upload") {
+      const tabId = sender && sender.tab && sender.tab.id;
+      upload(msg, tabId)
+        .then((r) => sendResponse(r))
+        .catch((e) =>
+          sendResponse({
+            ok: false,
+            error: e && e.message ? e.message : String(e),
+          }),
+        );
+      return true; // keep the channel open for the async response
+    }
+    return false;
+  });
+}
+
+// Export the pure service functions for the Node test runner. This block is
+// inert in the MV3 worker (no CommonJS `module` there), so it changes nothing
+// about how the extension loads.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    transcodeClaudeConversation,
+    transcodeChatGPTConversation,
+    chatgptActiveBranch,
+    epochToIso,
+    buildTar,
+    gzip,
+    upload,
+  };
+}

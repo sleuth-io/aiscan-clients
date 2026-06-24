@@ -1,0 +1,9 @@
+{
+  "name": "aiscan-extension",
+  "version": "0.0.3",
+  "private": true,
+  "description": "Tests for the aiscan WebExtension service functions. No build step and no dependencies — uses the Node built-in test runner.",
+  "scripts": {
+    "test": "node --test"
+  }
+}
