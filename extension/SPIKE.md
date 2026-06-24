@@ -1,39 +1,40 @@
-# claude.ai capture spike
+# claude.ai capture
 
-Cheapest local loop to prove we can pull **all** your claude.ai conversations and run
-aiscan's analysis over them — the same way the desktop client analyzes Claude Code sessions.
-**Status: working end to end** (verified in Firefox against a real account).
+Pull **all** your claude.ai conversations and run aiscan's analysis over them — the same way the
+desktop client analyzes Claude Code sessions. The extension now uploads **directly to a Pulse
+aiscan instance** (`/api/aiscan/ingest`); there is no local Go daemon in the loop anymore.
 
 ## Pieces
 
-- **This extension** — one build, loads in Chrome and Firefox. It's just an *authenticated
-  bridge*; it does no parsing.
-  - `content.js` — runs on claude.ai in the **page's own origin**, so its `fetch` carries your
-    first-party session cookies. Injects an on-page **"aiscan: scan N"** button (bottom-right),
-    enumerates your conversations, fetches each transcript, and hands the batch to the
-    background worker.
-  - `background.js` — receives the batch and POSTs it to the local daemon (the https claude.ai
-    page can't reach `http://127.0.0.1` directly — mixed content — so the worker does it).
-  - `popup.html` / `popup.js` — leftover trigger/status UI; the on-page button is the real one.
-- **`aiscan serve --local`** (in the `aiscan` repo, `internal/cli/serve.go`) — a loopback HTTP
-  receiver that transcodes each web conversation into the Claude Code session shape and runs the
-  existing scan/report pipeline.
+- **`content.js`** — runs on claude.ai in the **page's own origin**, so its `fetch` carries your
+  first-party session cookies. Injects an on-page **"aiscan: scan N"** button (bottom-right),
+  enumerates your conversations, fetches each transcript, and hands the batch to the background
+  worker. It does no parsing.
+- **`background.js`** — the real client. It (1) transcodes each conversation to Claude Code JSONL
+  (the server has a Claude Code parser only), (2) packs the sessions into a **gzipped tar** under
+  `projects/claude-ai/<uuid>.jsonl` — the wire format `/api/aiscan/ingest` expects, (3) gets an
+  OAuth access token via the **device-code flow** (well-known client `sleuth-aiscan`, cached in
+  `chrome.storage`), and (4) POSTs the gzip to `{instance}/api/aiscan/ingest`. The server stores
+  it and runs the pipeline on a Celery worker; we get back a run GID and link to its report.
+- **`options.html` / `options.js`** — set the **instance URL** (`http://dev.pulse.sleuth.io` for
+  local dev, `https://app.skills.new` for prod) and the history window.
+- **`popup.html` / `popup.js`** — leftover trigger/status UI; the on-page button is the real one.
+
+The claude.ai page can't reach the instance directly when it's `http://` (mixed content), and a
+content script is bound by the page's CORS — so the cross-origin upload + OAuth calls run in the
+background worker, which holds host permissions for the instance.
 
 ## Run it
 
-1. Start the receiver (from the `aiscan` repo):
-   ```
-   go run ./cmd/aiscan serve --local        # listens on 127.0.0.1:8765
-   ```
+1. Have a Pulse instance running with the `AISCAN` flag enabled for your org (locally:
+   `http://dev.pulse.sleuth.io`).
 2. Load the extension **unpacked**, logged in to claude.ai in the same browser:
    - **Firefox:** `about:debugging` → This Firefox → Load Temporary Add-on → pick `manifest.json`.
    - **Chrome:** `chrome://extensions` → Developer mode → Load unpacked → pick this folder.
-3. **Refresh the claude.ai tab** (content scripts only inject on load), then click the orange
-   **"aiscan: scan N"** button bottom-right. Progress shows in the on-page panel; the full report
-   prints to the daemon console.
-
-The raw upload is also saved to `~/.aiscan-spike/last-upload.json` for inspection / replay
-(`curl --data-binary @… http://127.0.0.1:8765/ingest`).
+3. Open the extension **options** and set the instance URL (defaults to `https://app.skills.new`).
+4. **Refresh the claude.ai tab** (content scripts only inject on load), then click the orange
+   **"aiscan: scan N"** button bottom-right. On the first scan an approval tab opens — authorize
+   the extension once; the upload then continues automatically and the panel links to the report.
 
 ## What we learned (real-account findings)
 
@@ -49,11 +50,12 @@ The raw upload is also saved to `~/.aiscan-spike/last-upload.json` for inspectio
 
 ## Known spike shortcuts (not the v2 design)
 
-- The receiver **transcodes** claude.ai → Claude Code JSONL to reuse 100% of existing analysis.
-  The real v2 server would have a dedicated versioned `claude-web` parser mapping straight to the
-  normalized session model. `transcodeConversation` in `serve.go` is where that slots in.
-- Capped to the newest N conversations (`MAX_CONVERSATIONS` in `content.js`; set 0 for all).
-  No pagination on the list endpoint yet, no redaction, no auth on the daemon.
+- The extension **transcodes** claude.ai → Claude Code JSONL (`transcodeConversation` in
+  `background.js`) and uploads `source=claude-code`, so web sessions are attributed as Claude
+  Code in the report. The real v2 server would expose a dedicated versioned `claude-web` parser
+  (and `source` value) mapping straight to the normalized session model.
+- No on-device redaction yet; raw transcript text is uploaded (it's PII and stays server-side).
+- No pagination on the conversation list endpoint yet.
 - claude.ai carries no token usage, so cost/token columns stay zero.
 - Per-message model isn't recorded by the API; the conversation-level model is applied to all
   assistant turns.

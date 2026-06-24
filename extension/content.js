@@ -4,20 +4,19 @@
 // separate host-permission grant, and its fetch() is same-origin to claude.ai,
 // so it carries your first-party session cookies (exactly like running fetch in
 // the page console). It injects a small button + status panel; on click it
-// pulls the conversations and hands them to the background worker, which POSTs
-// them to the local aiscan daemon (the content script can't reach http://
-// localhost from this https page).
+// pulls the conversations and hands them to the background worker, which
+// transcodes, authorizes, and uploads them to the configured Pulse instance
+// (the cross-origin upload + OAuth can't run on the claude.ai origin).
 
 (function () {
   if (window.__aiscanInjected) return;
   window.__aiscanInjected = true;
 
   const CONCURRENCY = 5;
-  const REPORT_URL = "http://127.0.0.1:8765/report";
-  // Config (role profile + history window) comes from the options page; these
-  // are defaults until it loads from chrome.storage. windowDays is kept in lock
-  // step with the daemon's Claude Code window (0 = all time).
-  let cfg = { windowDays: 7, role: "" };
+  // Config (history window) comes from the options page; this is the default
+  // until it loads from chrome.storage. windowDays scopes which conversations
+  // are sent (0 = all time).
+  let cfg = { windowDays: 7 };
 
   const btn = document.createElement("button");
   function updateLabel() {
@@ -27,7 +26,7 @@
 
   const gear = document.createElement("button");
   gear.textContent = "⚙";
-  gear.title = "aiscan settings (role + window)";
+  gear.title = "aiscan settings (history window)";
   gear.style.cssText =
     "position:fixed;z-index:2147483647;bottom:16px;right:" +
     "calc(16px + 150px);padding:8px 10px;background:#3a3a3f;color:#fff;border:none;" +
@@ -128,19 +127,16 @@
         return full;
       });
 
-      log("Uploading " + conversations.length + " to local aiscan…");
+      log("Uploading " + conversations.length + " conversations…");
       const resp = await chrome.runtime.sendMessage({
         type: "upload",
         conversations,
-        role: cfg.role,
         windowDays: cfg.windowDays,
       });
       if (resp && resp.ok) {
-        let url = REPORT_URL;
-        try { url = JSON.parse(resp.text).url || url; } catch (_) {}
-        log("Uploaded. Analysis is running — open the report:");
+        log("Uploaded " + resp.sessions + " sessions. Analysis is running — open the report:");
         const a = document.createElement("a");
-        a.href = url;
+        a.href = resp.reportUrl;
         a.target = "_blank";
         a.rel = "noopener";
         a.textContent = "▶ Open report (streams live, then shows the result)";
@@ -161,7 +157,17 @@
   // auto-advances to the finished report.
   btn.addEventListener("click", scan);
 
-  // Load saved config (role + window) from the options page.
+  // The background worker authorizes via the OAuth device-code flow on first
+  // upload (or after a token expires). It opens the approval page in a new tab
+  // and messages us the user code to confirm.
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === "authPrompt") {
+      log("Authorize this extension in the opened tab, then it continues automatically.");
+      if (msg.userCode) log("  confirmation code: " + msg.userCode);
+    }
+  });
+
+  // Load saved config (history window) from the options page.
   chrome.storage.local.get("config", (d) => {
     if (d && d.config) cfg = Object.assign(cfg, d.config);
     updateLabel();

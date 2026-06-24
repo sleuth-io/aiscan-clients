@@ -1,10 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "aiscan claude.ai spike",
-  "version": "0.0.1",
-  "description": "Spike: pull all your claude.ai conversations and send them to a local aiscan daemon for analysis.",
+  "name": "aiscan claude.ai capture",
+  "version": "0.0.2",
+  "description": "Pull your claude.ai conversations and upload them to a Pulse aiscan instance for analysis.",
   "permissions": ["storage"],
-  "host_permissions": ["https://claude.ai/*", "http://127.0.0.1/*"],
+  "host_permissions": [
+    "https://claude.ai/*",
+    "http://dev.pulse.sleuth.io/*",
+    "https://dev.pulse.sleuth.io/*",
+    "https://app.skills.new/*"
+  ],
   "background": { "service_worker": "background.js", "scripts": ["background.js"] },
   "content_scripts": [
     {
@@ -15,7 +20,7 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "aiscan claude.ai spike"
+    "default_title": "aiscan claude.ai capture"
   },
   "options_ui": { "page": "options.html", "open_in_tab": true },
   "browser_specific_settings": {
