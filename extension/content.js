@@ -375,13 +375,14 @@
 
   // The background worker authorizes via the OAuth device-code flow on first
   // upload (or after a token expires). It opens the approval page in a new tab
-  // and messages us the user code to confirm.
+  // with the code already embedded, so the user just clicks "Authorize"; the
+  // code is shown only as a fallback in case the page doesn't prefill it.
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg && msg.type === "authPrompt") {
       log(
-        "Authorize this extension in the opened tab, then it continues automatically.",
+        'Click "Authorize" in the opened tab, then it continues automatically.',
       );
-      if (msg.userCode) log("  confirmation code: " + msg.userCode);
+      if (msg.userCode) log("  (if asked for a code: " + msg.userCode + ")");
     }
   });
 

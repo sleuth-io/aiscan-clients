@@ -242,8 +242,21 @@ async function ensureToken(instanceUrl, tabId) {
   if (cached) return cached;
 
   const auth = await startDeviceAuthorization(instanceUrl);
-  const verifyUrl = auth.verification_uri_complete || auth.verification_uri;
-  // Open the approval page and tell the content script to surface the code.
+  // Prefer the server's complete URI (code already embedded). If it only gives
+  // a plain verification_uri, synthesize the complete form by appending the
+  // user_code query param (RFC 8628 convention) so the approval page can
+  // prefill it — the user just clicks "Authorize" instead of pasting a code.
+  let verifyUrl = auth.verification_uri_complete;
+  if (!verifyUrl && auth.verification_uri) {
+    verifyUrl = auth.verification_uri;
+    if (auth.user_code) {
+      verifyUrl +=
+        (verifyUrl.includes("?") ? "&" : "?") +
+        "user_code=" +
+        encodeURIComponent(auth.user_code);
+    }
+  }
+  // Open the approval page; pass the code along only as a fallback to display.
   if (verifyUrl) chrome.tabs.create({ url: verifyUrl });
   if (tabId != null) {
     chrome.tabs
