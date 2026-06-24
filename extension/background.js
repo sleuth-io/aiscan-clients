@@ -468,37 +468,57 @@ async function upload(msg, tabId) {
   return { ok: true, reportUrl, sessions: files.length };
 }
 
-// The whole UI (scan button, settings ⚙, status panel) lives on the claude.ai
-// page itself, injected by content.js — there is no popup. Clicking the toolbar
-// icon just focuses an existing claude.ai tab, or opens one if none is around.
-chrome.action.onClicked.addListener(async () => {
-  const tabs = await chrome.tabs.query({
-    url: ["https://claude.ai/*", "https://chatgpt.com/*"],
+// Register the worker's event listeners only in the extension runtime. Under
+// Node (the unit tests below `require` this file) `chrome` is absent, so the
+// pure service functions can be exercised without the WebExtension APIs.
+if (typeof chrome !== "undefined" && chrome.runtime) {
+  // The whole UI (scan button, settings ⚙, status panel) lives on the page
+  // itself, injected by content.js — there is no popup. Clicking the toolbar
+  // icon just focuses an existing claude.ai/chatgpt.com tab, or opens one.
+  chrome.action.onClicked.addListener(async () => {
+    const tabs = await chrome.tabs.query({
+      url: ["https://claude.ai/*", "https://chatgpt.com/*"],
+    });
+    // Some matched tabs (e.g. devtools) can lack a usable id; fall through to
+    // opening a fresh tab rather than throwing on an undefined id.
+    const tab = tabs.find((t) => t && t.id != null);
+    if (tab) {
+      await chrome.tabs.update(tab.id, { active: true });
+      if (tab.windowId != null)
+        await chrome.windows.update(tab.windowId, { focused: true });
+    } else {
+      await chrome.tabs.create({ url: "https://claude.ai/" });
+    }
   });
-  // Some matched tabs (e.g. devtools) can lack a usable id; fall through to
-  // opening a fresh tab rather than throwing on an undefined id.
-  const tab = tabs.find((t) => t && t.id != null);
-  if (tab) {
-    await chrome.tabs.update(tab.id, { active: true });
-    if (tab.windowId != null)
-      await chrome.windows.update(tab.windowId, { focused: true });
-  } else {
-    await chrome.tabs.create({ url: "https://claude.ai/" });
-  }
-});
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === "upload") {
-    const tabId = sender && sender.tab && sender.tab.id;
-    upload(msg, tabId)
-      .then((r) => sendResponse(r))
-      .catch((e) =>
-        sendResponse({
-          ok: false,
-          error: e && e.message ? e.message : String(e),
-        }),
-      );
-    return true; // keep the channel open for the async response
-  }
-  return false;
-});
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg && msg.type === "upload") {
+      const tabId = sender && sender.tab && sender.tab.id;
+      upload(msg, tabId)
+        .then((r) => sendResponse(r))
+        .catch((e) =>
+          sendResponse({
+            ok: false,
+            error: e && e.message ? e.message : String(e),
+          }),
+        );
+      return true; // keep the channel open for the async response
+    }
+    return false;
+  });
+}
+
+// Export the pure service functions for the Node test runner. This block is
+// inert in the MV3 worker (no CommonJS `module` there), so it changes nothing
+// about how the extension loads.
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    transcodeClaudeConversation,
+    transcodeChatGPTConversation,
+    chatgptActiveBranch,
+    epochToIso,
+    buildTar,
+    gzip,
+    upload,
+  };
+}

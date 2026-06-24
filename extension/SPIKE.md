@@ -47,6 +47,18 @@ background worker, which holds host permissions for the instance.
    opens — authorize the extension once; the upload then continues automatically and the panel
    links to the report.
 
+## Tests
+
+`background.js`'s service functions (the two transcoders, the tar/gzip packaging, and the
+`upload` orchestration) have unit tests with **no build step and no dependencies** — they use the
+Node built-in test runner. `background.js` registers its `chrome.*` listeners behind a runtime
+guard and exports the pure functions under CommonJS, so Node can `require` it; both shims are
+inert in the MV3 worker. Run from `extension/`:
+
+```
+node --test        # or: npm test
+```
+
 ## What we learned (real-account findings)
 
 - **Auth:** the API is cookie-authed, but cookies are first-party/SameSite, so the fetch must
