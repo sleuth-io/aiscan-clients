@@ -106,7 +106,7 @@
     persist();
   });
 
-  // Pulse instance — dev only. Applies as you type.
+  // Pulse instance — dev only. Commits on blur/Enter, not per keystroke.
   const instanceHeader = mkLabel("Pulse instance");
   const instanceHint = mkHint(
     "Where uploads go. e.g. http://dev.pulse.sleuth.io for local dev, https://app.skills.new for production.",
@@ -119,12 +119,33 @@
   settings.appendChild(instanceHeader);
   settings.appendChild(instanceHint);
   settings.appendChild(instanceEl);
-  instanceEl.addEventListener("input", () => {
-    cfg.instanceUrl = (instanceEl.value.trim() || DEFAULT_INSTANCE).replace(
-      /\/+$/,
-      "",
-    );
+  // Commit only on blur/Enter so transient or invalid mid-edit values never
+  // become the upload target. Empty falls back to the default; anything that
+  // isn't a valid http(s) URL reverts to the last saved value.
+  const commitInstance = () => {
+    const raw = instanceEl.value.trim();
+    if (!raw) {
+      cfg.instanceUrl = DEFAULT_INSTANCE;
+    } else {
+      let url;
+      try {
+        url = new URL(raw);
+      } catch (_) {
+        instanceEl.value = cfg.instanceUrl;
+        return;
+      }
+      if (url.protocol !== "http:" && url.protocol !== "https:") {
+        instanceEl.value = cfg.instanceUrl;
+        return;
+      }
+      cfg.instanceUrl = raw.replace(/\/+$/, "");
+    }
+    instanceEl.value = cfg.instanceUrl;
     persist();
+  };
+  instanceEl.addEventListener("change", commitInstance);
+  instanceEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") instanceEl.blur();
   });
 
   // Account — Sign out lives behind dev mode (most users never need it).

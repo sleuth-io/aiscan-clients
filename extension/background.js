@@ -340,10 +340,13 @@ async function upload(msg, tabId) {
 // icon just focuses an existing claude.ai tab, or opens one if none is around.
 chrome.action.onClicked.addListener(async () => {
   const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
-  if (tabs.length) {
-    await chrome.tabs.update(tabs[0].id, { active: true });
-    if (tabs[0].windowId != null)
-      await chrome.windows.update(tabs[0].windowId, { focused: true });
+  // Some matched tabs (e.g. devtools) can lack a usable id; fall through to
+  // opening a fresh tab rather than throwing on an undefined id.
+  const tab = tabs.find((t) => t && t.id != null);
+  if (tab) {
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId != null)
+      await chrome.windows.update(tab.windowId, { focused: true });
   } else {
     await chrome.tabs.create({ url: "https://claude.ai/" });
   }
