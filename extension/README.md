@@ -13,8 +13,8 @@ server. One codebase builds for Chrome and Firefox (Manifest V3).
   scraping the DOM (more stable).
 - **Manifest V3 reality.** No remotely-hosted code (config/data only). Background service
   workers are short-lived, so capture is continuous/passive rather than holding a connection.
-- **Trust surface.** The popup/options page shows status and what was last uploaded, and stores
-  the auth token in `chrome.storage`.
+- **Trust surface.** The on-page panel shows status and what was last uploaded, and stores
+  config + the auth token in `chrome.storage`.
 
 ## Layout (to be built)
 

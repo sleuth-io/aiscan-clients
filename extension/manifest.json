@@ -3,7 +3,7 @@
   "name": "aiscan claude.ai capture",
   "version": "0.0.2",
   "description": "Pull your claude.ai conversations and upload them to a Pulse aiscan instance for analysis.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "tabs"],
   "host_permissions": [
     "https://claude.ai/*",
     "http://dev.pulse.sleuth.io/*",
@@ -19,10 +19,8 @@
     }
   ],
   "action": {
-    "default_popup": "popup.html",
-    "default_title": "aiscan claude.ai capture"
+    "default_title": "aiscan — open claude.ai to scan"
   },
-  "options_ui": { "page": "options.html", "open_in_tab": true },
   "browser_specific_settings": {
     "gecko": { "id": "aiscan-spike@sleuth.io", "strict_min_version": "115.0" }
   }

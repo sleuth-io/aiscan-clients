@@ -322,11 +322,21 @@ async function upload(msg, tabId) {
   return { ok: true, reportUrl, sessions: files.length };
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === "options") {
-    chrome.runtime.openOptionsPage();
-    return false;
+// The whole UI (scan button, settings ⚙, status panel) lives on the claude.ai
+// page itself, injected by content.js — there is no popup. Clicking the toolbar
+// icon just focuses an existing claude.ai tab, or opens one if none is around.
+chrome.action.onClicked.addListener(async () => {
+  const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
+  if (tabs.length) {
+    await chrome.tabs.update(tabs[0].id, { active: true });
+    if (tabs[0].windowId != null)
+      await chrome.windows.update(tabs[0].windowId, { focused: true });
+  } else {
+    await chrome.tabs.create({ url: "https://claude.ai/" });
   }
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "upload") {
     const tabId = sender && sender.tab && sender.tab.id;
     upload(msg, tabId)
