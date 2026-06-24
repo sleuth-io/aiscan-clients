@@ -16,9 +16,11 @@ aiscan instance** (`/api/aiscan/ingest`); there is no local Go daemon in the loo
   OAuth access token via the **device-code flow** (well-known client `sleuth-aiscan`, cached in
   `chrome.storage`), and (4) POSTs the gzip to `{instance}/api/aiscan/ingest`. The server stores
   it and runs the pipeline on a Celery worker; we get back a run GID and link to its report.
-- **`options.html` / `options.js`** — set the **instance URL** (`http://dev.pulse.sleuth.io` for
-  local dev, `https://app.skills.new` for prod) and the history window.
-- **`popup.html` / `popup.js`** — leftover trigger/status UI; the on-page button is the real one.
+- **Inline settings panel** (in `content.js`) — the on-page **⚙** toggles a floaty popover to set
+  the **instance URL** (`http://dev.pulse.sleuth.io` for local dev, `https://app.skills.new` for
+  prod), the history window, and to sign out — all without leaving claude.ai.
+- There is **no popup** — the entire UI (scan button, settings ⚙, status panel) is injected on the
+  claude.ai page. Clicking the toolbar icon just focuses (or opens) a claude.ai tab.
 
 The claude.ai page can't reach the instance directly when it's `http://` (mixed content), and a
 content script is bound by the page's CORS — so the cross-origin upload + OAuth calls run in the
@@ -31,10 +33,11 @@ background worker, which holds host permissions for the instance.
 2. Load the extension **unpacked**, logged in to claude.ai in the same browser:
    - **Firefox:** `about:debugging` → This Firefox → Load Temporary Add-on → pick `manifest.json`.
    - **Chrome:** `chrome://extensions` → Developer mode → Load unpacked → pick this folder.
-3. Open the extension **options** and set the instance URL (defaults to `https://app.skills.new`).
-4. **Refresh the claude.ai tab** (content scripts only inject on load), then click the orange
-   **"aiscan: scan N"** button bottom-right. On the first scan an approval tab opens — authorize
-   the extension once; the upload then continues automatically and the panel links to the report.
+3. **Refresh the claude.ai tab** (content scripts only inject on load). Click the on-page **⚙**
+   and set the instance URL (defaults to `https://app.skills.new`).
+4. Click the orange **"aiscan: scan N"** button bottom-right. On the first scan an approval tab
+   opens — authorize the extension once; the upload then continues automatically and the panel
+   links to the report.
 
 ## What we learned (real-account findings)
 

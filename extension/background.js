@@ -242,8 +242,21 @@ async function ensureToken(instanceUrl, tabId) {
   if (cached) return cached;
 
   const auth = await startDeviceAuthorization(instanceUrl);
-  const verifyUrl = auth.verification_uri_complete || auth.verification_uri;
-  // Open the approval page and tell the content script to surface the code.
+  // Prefer the server's complete URI (code already embedded). If it only gives
+  // a plain verification_uri, synthesize the complete form by appending the
+  // user_code query param (RFC 8628 convention) so the approval page can
+  // prefill it — the user just clicks "Authorize" instead of pasting a code.
+  let verifyUrl = auth.verification_uri_complete;
+  if (!verifyUrl && auth.verification_uri) {
+    verifyUrl = auth.verification_uri;
+    if (auth.user_code) {
+      verifyUrl +=
+        (verifyUrl.includes("?") ? "&" : "?") +
+        "user_code=" +
+        encodeURIComponent(auth.user_code);
+    }
+  }
+  // Open the approval page; pass the code along only as a fallback to display.
   if (verifyUrl) chrome.tabs.create({ url: verifyUrl });
   if (tabId != null) {
     chrome.tabs
@@ -322,11 +335,21 @@ async function upload(msg, tabId) {
   return { ok: true, reportUrl, sessions: files.length };
 }
 
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg && msg.type === "options") {
-    chrome.runtime.openOptionsPage();
-    return false;
+// The whole UI (scan button, settings ⚙, status panel) lives on the claude.ai
+// page itself, injected by content.js — there is no popup. Clicking the toolbar
+// icon just focuses an existing claude.ai tab, or opens one if none is around.
+chrome.action.onClicked.addListener(async () => {
+  const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
+  if (tabs.length) {
+    await chrome.tabs.update(tabs[0].id, { active: true });
+    if (tabs[0].windowId != null)
+      await chrome.windows.update(tabs[0].windowId, { focused: true });
+  } else {
+    await chrome.tabs.create({ url: "https://claude.ai/" });
   }
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === "upload") {
     const tabId = sender && sender.tab && sender.tab.id;
     upload(msg, tabId)
