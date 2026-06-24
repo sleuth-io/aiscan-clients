@@ -85,7 +85,11 @@
           const items = (j && j.items) || [];
           all.push(...items);
           offset += items.length;
-          if (!items.length || offset >= ((j && j.total) || all.length)) break;
+          // A short page is the last one — this terminates without trusting
+          // `total`, so a missing/overstated count can't spin the loop. The
+          // `total` check just stops one request earlier on an exact boundary.
+          if (items.length < limit || offset >= ((j && j.total) || all.length))
+            break;
         }
         return all.map((c) => ({
           id: c.id,

@@ -40,7 +40,7 @@ function firstNonEmpty(...vals) {
   return "";
 }
 
-function transcodeConversation(conv, capturedAt) {
+function transcodeClaudeConversation(conv, capturedAt) {
   const sessionId = conv.uuid;
   if (!sessionId) return "";
   const model = conv.model || "claude-web";
@@ -414,7 +414,7 @@ async function upload(msg, tabId) {
   const isChatGPT = msg.provider === "chatgpt";
   const transcode = isChatGPT
     ? transcodeChatGPTConversation
-    : transcodeConversation;
+    : transcodeClaudeConversation;
   const dir = isChatGPT ? "projects/chatgpt/" : "projects/claude-ai/";
   const source = isChatGPT ? "chatgpt-web" : "claude-web";
   const idOf = (conv) =>
