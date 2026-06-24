@@ -66,77 +66,138 @@
     "box-sizing:border-box;padding:5px 7px;border-radius:6px;border:1px solid #3a3a3f;" +
     "background:#111113;color:#eaeaea";
 
-  settings.appendChild(mkLabel("Pulse instance"));
-  settings.appendChild(
-    mkHint(
-      "Where uploads go. Use http://dev.pulse.sleuth.io for local dev, or https://app.skills.new for production. Just the base URL.",
-    ),
+  // Persist immediately on every change — there is no Save button.
+  const persist = () => chrome.storage.local.set({ config: cfg });
+
+  // History window — a slider over discrete stops; the last stop (0) is all time.
+  const WINDOW_STEPS = [7, 14, 30, 60, 90, 180, 0];
+  const WINDOW_TICKS = ["7d", "14d", "30d", "60d", "90d", "180d", "All"];
+  const windowText = (d) => (d > 0 ? "Last " + d + " days" : "All time");
+
+  settings.appendChild(mkLabel("History window"));
+  const windowValue = document.createElement("div");
+  windowValue.style.cssText = "color:#da7756;font-weight:600;margin:-2px 0 6px";
+  settings.appendChild(windowValue);
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "0";
+  slider.max = String(WINDOW_STEPS.length - 1);
+  slider.step = "1";
+  slider.style.cssText = "width:100%;accent-color:#da7756;cursor:pointer;margin:0";
+  settings.appendChild(slider);
+  const ticks = document.createElement("div");
+  ticks.style.cssText =
+    "display:flex;justify-content:space-between;color:#9a9aa0;font-size:10px;margin-top:2px";
+  WINDOW_TICKS.forEach((t) => {
+    const s = document.createElement("span");
+    s.textContent = t;
+    ticks.appendChild(s);
+  });
+  settings.appendChild(ticks);
+  const windowHint = mkHint(
+    "How far back to scan, for claude.ai web and local Claude Code sessions.",
+  );
+  settings.appendChild(windowHint);
+
+  slider.addEventListener("input", () => {
+    cfg.windowDays = WINDOW_STEPS[parseInt(slider.value, 10)] || 0;
+    windowValue.textContent = windowText(cfg.windowDays);
+    updateLabel();
+    persist();
+  });
+
+  // Pulse instance — dev only. Applies as you type.
+  const instanceHeader = mkLabel("Pulse instance");
+  const instanceHint = mkHint(
+    "Where uploads go. e.g. http://dev.pulse.sleuth.io for local dev, https://app.skills.new for production.",
   );
   const instanceEl = document.createElement("input");
   instanceEl.type = "text";
   instanceEl.placeholder = DEFAULT_INSTANCE;
   instanceEl.style.cssText =
     fieldCss + ";width:100%;font:12px ui-monospace,Menlo,monospace";
+  settings.appendChild(instanceHeader);
+  settings.appendChild(instanceHint);
   settings.appendChild(instanceEl);
+  instanceEl.addEventListener("input", () => {
+    cfg.instanceUrl = (instanceEl.value.trim() || DEFAULT_INSTANCE).replace(
+      /\/+$/,
+      "",
+    );
+    persist();
+  });
 
-  settings.appendChild(mkLabel("Days of history to include"));
-  const windowEl = document.createElement("input");
-  windowEl.type = "number";
-  windowEl.min = "0";
-  windowEl.style.cssText = fieldCss + ";width:80px;font:13px system-ui";
-  settings.appendChild(windowEl);
-  settings.appendChild(
-    mkHint(
-      "Applies to claude.ai web sessions and your local Claude Code sessions. 0 = all time.",
-    ),
-  );
-
-  const saveBtn = document.createElement("button");
-  saveBtn.textContent = "Save";
-  saveBtn.style.cssText =
-    "padding:7px 14px;background:#236a91;color:#fff;border:none;border-radius:6px;cursor:pointer;font:13px system-ui";
+  // Account — Sign out lives behind dev mode (most users never need it).
   const signoutBtn = document.createElement("button");
   signoutBtn.textContent = "Sign out";
   signoutBtn.style.cssText =
-    "margin-left:8px;padding:7px 14px;background:#7a3b3b;color:#fff;border:none;border-radius:6px;cursor:pointer;font:13px system-ui";
+    "margin-top:8px;padding:7px 14px;background:#7a3b3b;color:#fff;border:none;border-radius:6px;cursor:pointer;font:13px system-ui";
   const savedNote = document.createElement("span");
   savedNote.style.cssText = "margin-left:10px;color:#7fd18a;font-size:12px";
-  settings.appendChild(saveBtn);
   settings.appendChild(signoutBtn);
   settings.appendChild(savedNote);
-  settings.appendChild(
-    mkHint(
-      "Authorization happens automatically on your first scan (an approval tab opens). Sign out clears the cached token — use it after switching instances.",
-    ),
+  const signoutHint = mkHint(
+    "Authorization happens automatically on your first scan (an approval tab opens). Sign out clears the cached token — use it after switching instances.",
   );
-  document.documentElement.appendChild(settings);
+  settings.appendChild(signoutHint);
 
   const flash = (msg) => {
     savedNote.textContent = msg;
     setTimeout(() => (savedNote.textContent = ""), 1500);
   };
+  signoutBtn.addEventListener("click", () => {
+    chrome.storage.local.remove("auth", () => flash("Signed out."));
+  });
+
+  // Subtle dev-mode toggle: reveals the instance field + all help text.
+  const devToggle = document.createElement("label");
+  devToggle.style.cssText =
+    "display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:12px;" +
+    "padding-top:10px;border-top:1px solid #2c2c30;color:#6a6a70;font-size:11px;cursor:pointer";
+  const devCheck = document.createElement("input");
+  devCheck.type = "checkbox";
+  devCheck.style.cssText = "margin:0;accent-color:#6a6a70;cursor:pointer";
+  const devText = document.createElement("span");
+  devText.textContent = "Developer mode";
+  devToggle.appendChild(devCheck);
+  devToggle.appendChild(devText);
+  settings.appendChild(devToggle);
+  document.documentElement.appendChild(settings);
+
+  const devOnly = [
+    windowHint,
+    instanceHeader,
+    instanceHint,
+    instanceEl,
+    signoutBtn,
+    savedNote,
+    signoutHint,
+  ];
+  const applyDevMode = () => {
+    const on = !!cfg.devMode;
+    devCheck.checked = on;
+    devOnly.forEach((el) => (el.style.display = on ? "" : "none"));
+  };
+  devCheck.addEventListener("change", () => {
+    cfg.devMode = devCheck.checked;
+    applyDevMode();
+    persist();
+  });
+
   gear.addEventListener("click", () => {
     const showing = settings.style.display !== "none";
     if (!showing) {
+      // Opening settings clears any previous scan log out of the popover.
+      panel.style.display = "none";
+      panel.textContent = "";
+      const idx = Math.max(0, WINDOW_STEPS.indexOf(cfg.windowDays));
+      slider.value = String(idx);
+      windowValue.textContent = windowText(WINDOW_STEPS[idx]);
       instanceEl.value = cfg.instanceUrl || DEFAULT_INSTANCE;
-      windowEl.value = cfg.windowDays != null ? cfg.windowDays : 7;
+      applyDevMode();
       savedNote.textContent = "";
     }
     settings.style.display = showing ? "none" : "block";
-  });
-  saveBtn.addEventListener("click", () => {
-    cfg.instanceUrl = (instanceEl.value.trim() || DEFAULT_INSTANCE).replace(
-      /\/+$/,
-      "",
-    );
-    cfg.windowDays = Math.max(0, parseInt(windowEl.value, 10) || 0);
-    chrome.storage.local.set({ config: cfg }, () => {
-      updateLabel();
-      flash("Saved.");
-    });
-  });
-  signoutBtn.addEventListener("click", () => {
-    chrome.storage.local.remove("auth", () => flash("Signed out."));
   });
   // Split button: the wide main part runs the scan; the narrow ⚙ part toggles
   // the settings popover. Both live in one rounded bar with a divider between,
@@ -220,8 +281,14 @@
   }
 
   async function scan() {
+    // Take over the popover: drop the settings view, show a fresh log, and lock
+    // the ⚙ so settings can't reopen mid-scan.
     btn.disabled = true;
+    gear.disabled = true;
+    bar.style.opacity = "0.55";
+    settings.style.display = "none";
     panel.textContent = "";
+    panel.style.display = "block";
     try {
       log("Finding organization…");
       const org = await findOrg();
@@ -296,6 +363,8 @@
       log("ERROR: " + (e && e.message ? e.message : String(e)));
     } finally {
       btn.disabled = false;
+      gear.disabled = false;
+      bar.style.opacity = "1";
     }
   }
 
