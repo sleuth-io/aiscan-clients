@@ -1,12 +1,15 @@
-// Content script — runs on claude.ai in the page's own origin.
+// Content script — runs on claude.ai / chatgpt.com in the page's own origin.
 //
 // A declared content script auto-runs in both Chrome and Firefox without a
-// separate host-permission grant, and its fetch() is same-origin to claude.ai,
-// so it carries your first-party session cookies (exactly like running fetch in
-// the page console). It injects a small button + status panel; on click it
-// pulls the conversations and hands them to the background worker, which
-// transcodes, authorizes, and uploads them to the configured Pulse instance
-// (the cross-origin upload + OAuth can't run on the claude.ai origin).
+// separate host-permission grant, and its fetch() is same-origin to the site,
+// so it carries your first-party session credentials (exactly like running
+// fetch in the page console). It injects a small button + status panel; on
+// click it pulls the conversations and hands them to the background worker,
+// which transcodes, authorizes, and uploads them to the configured Pulse
+// instance (the cross-origin upload + OAuth can't run on the site's origin).
+//
+// Layout: provider adapters (what to fetch, per site) → DOM helper → UI (the
+// button + settings/log popovers) → HTTP helpers → scan orchestration.
 
 (function () {
   if (window.__aiscanInjected) return;
@@ -105,10 +108,38 @@
   };
   const provider = PROVIDERS[location.hostname] || PROVIDERS["claude.ai"];
 
-  const btn = document.createElement("button");
-  btn.textContent = "Scan and upload my chats";
-  // The window scope no longer fits the label (the main button now reads as a
-  // plain action), so surface it in the tooltip instead — refreshed after Save.
+  // ---- Tiny DOM helper ---------------------------------------------------
+  // claude.ai enforces a Trusted-Types CSP that blocks string-to-HTML, so the
+  // whole UI is built from real nodes. `el` keeps that declarative: props map
+  // onto element properties (`style` -> cssText, `text` -> textContent, `on` ->
+  // an {event: handler} map, anything else set directly); children are nodes or
+  // strings (strings become text nodes).
+  function el(tag, props, children) {
+    const node = document.createElement(tag);
+    for (const [k, v] of Object.entries(props || {})) {
+      if (v == null) continue;
+      if (k === "style") node.style.cssText = v;
+      else if (k === "text") node.textContent = v;
+      else if (k === "on")
+        for (const [ev, fn] of Object.entries(v)) node.addEventListener(ev, fn);
+      else node[k] = v;
+    }
+    for (const c of [].concat(children == null ? [] : children)) {
+      if (c == null) continue;
+      node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    }
+    return node;
+  }
+
+  // ---- UI: a split button (scan | ⚙) with settings + log popovers --------
+  const btn = el("button", {
+    text: "Scan and upload my chats",
+    style:
+      "padding:8px 14px;background:#da7756;color:#fff;border:none;cursor:pointer;" +
+      "font:13px system-ui,sans-serif;border-right:1px solid rgba(0,0,0,.18)",
+  });
+  // The window scope no longer fits the label (the button reads as a plain
+  // action), so surface it in the tooltip instead — refreshed after each change.
   function updateLabel() {
     btn.title =
       cfg.windowDays > 0
@@ -121,34 +152,32 @@
   }
   updateLabel();
 
-  const gear = document.createElement("button");
-  gear.textContent = "⚙";
-  gear.title = "aiscan settings (instance + history window)";
+  const gear = el("button", {
+    text: "⚙",
+    title: "aiscan settings (instance + history window)",
+    style:
+      "padding:8px 11px 8px 9px;background:#c4634a;color:#fff;border:none;cursor:pointer;" +
+      "font:18px system-ui;line-height:1;display:flex;align-items:center",
+  });
 
-  // Inline settings panel — a floaty popover anchored above the gear, so the
-  // user never leaves claude.ai to edit the instance URL / history window or to
-  // sign out. Built from DOM nodes (not innerHTML) because claude.ai enforces a
-  // Trusted-Types CSP that blocks string-to-HTML assignment. Reads/writes the
-  // same chrome.storage.local "config" that content.js loads below and that
+  // Inline settings popover — anchored above the gear so the user never leaves
+  // the page to edit the instance URL / history window or to sign out. Reads/
+  // writes the same chrome.storage.local "config" that loads below and that
   // background.js reads on upload; "Sign out" clears the cached OAuth token.
-  const settings = document.createElement("div");
-  settings.style.cssText =
-    "position:fixed;z-index:2147483647;bottom:56px;right:16px;width:340px;display:none;" +
-    "box-sizing:border-box;padding:12px;background:#1d1d1f;color:#eaeaea;border-radius:8px;" +
-    "font:13px system-ui,-apple-system,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35)";
+  const settings = el("div", {
+    style:
+      "position:fixed;z-index:2147483647;bottom:56px;right:16px;width:340px;display:none;" +
+      "box-sizing:border-box;padding:12px;background:#1d1d1f;color:#eaeaea;border-radius:8px;" +
+      "font:13px system-ui,-apple-system,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35)",
+  });
 
-  const mkLabel = (text) => {
-    const l = document.createElement("div");
-    l.textContent = text;
-    l.style.cssText = "font-weight:600;margin:0 0 4px";
-    return l;
-  };
-  const mkHint = (text) => {
-    const h = document.createElement("div");
-    h.textContent = text;
-    h.style.cssText = "color:#9a9aa0;font-size:11px;margin:2px 0 10px";
-    return h;
-  };
+  const mkLabel = (text) =>
+    el("div", { style: "font-weight:600;margin:0 0 4px", text });
+  const mkHint = (text) =>
+    el("div", {
+      style: "color:#9a9aa0;font-size:11px;margin:2px 0 10px",
+      text,
+    });
   const fieldCss =
     "box-sizing:border-box;padding:5px 7px;border-radius:6px;border:1px solid #3a3a3f;" +
     "background:#111113;color:#eaeaea";
@@ -161,30 +190,84 @@
   const WINDOW_TICKS = ["7d", "14d", "30d", "60d", "90d", "180d", "All"];
   const windowText = (d) => (d > 0 ? "Last " + d + " days" : "All time");
 
-  settings.appendChild(mkLabel("History window"));
-  const windowValue = document.createElement("div");
-  windowValue.style.cssText = "color:#da7756;font-weight:600;margin:-2px 0 6px";
-  settings.appendChild(windowValue);
-  const slider = document.createElement("input");
-  slider.type = "range";
-  slider.min = "0";
-  slider.max = String(WINDOW_STEPS.length - 1);
-  slider.step = "1";
-  slider.style.cssText = "width:100%;accent-color:#da7756;cursor:pointer;margin:0";
-  settings.appendChild(slider);
-  const ticks = document.createElement("div");
-  ticks.style.cssText =
-    "display:flex;justify-content:space-between;color:#9a9aa0;font-size:10px;margin-top:2px";
-  WINDOW_TICKS.forEach((t) => {
-    const s = document.createElement("span");
-    s.textContent = t;
-    ticks.appendChild(s);
+  const windowValue = el("div", {
+    style: "color:#da7756;font-weight:600;margin:-2px 0 6px",
   });
-  settings.appendChild(ticks);
+  const slider = el("input", {
+    type: "range",
+    min: "0",
+    max: String(WINDOW_STEPS.length - 1),
+    step: "1",
+    style: "width:100%;accent-color:#da7756;cursor:pointer;margin:0",
+  });
+  const ticks = el(
+    "div",
+    {
+      style:
+        "display:flex;justify-content:space-between;color:#9a9aa0;font-size:10px;margin-top:2px",
+    },
+    WINDOW_TICKS.map((t) => el("span", { text: t })),
+  );
   const windowHint = mkHint(
     "How far back to scan your " + provider.label + " sessions.",
   );
-  settings.appendChild(windowHint);
+
+  // Pulse instance — dev only. Commits on blur/Enter, not per keystroke.
+  const instanceHeader = mkLabel("Pulse instance");
+  const instanceHint = mkHint(
+    "Where uploads go. e.g. http://dev.pulse.sleuth.io for local dev, https://app.skills.new for production.",
+  );
+  const instanceEl = el("input", {
+    type: "text",
+    placeholder: DEFAULT_INSTANCE,
+    style: fieldCss + ";width:100%;font:12px ui-monospace,Menlo,monospace",
+  });
+
+  // Account — Sign out lives behind dev mode (most users never need it).
+  const signoutBtn = el("button", {
+    text: "Sign out",
+    style:
+      "margin-top:8px;padding:7px 14px;background:#7a3b3b;color:#fff;border:none;" +
+      "border-radius:6px;cursor:pointer;font:13px system-ui",
+  });
+  const savedNote = el("span", {
+    style: "margin-left:10px;color:#7fd18a;font-size:12px",
+  });
+  const signoutHint = mkHint(
+    "Authorization happens automatically on your first scan (an approval tab opens). Sign out clears the cached token — use it after switching instances.",
+  );
+
+  // Subtle dev-mode toggle: reveals the instance field + all help text.
+  const devCheck = el("input", {
+    type: "checkbox",
+    style: "margin:0;accent-color:#6a6a70;cursor:pointer",
+  });
+  const devToggle = el(
+    "label",
+    {
+      style:
+        "display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:12px;" +
+        "padding-top:10px;border-top:1px solid #2c2c30;color:#6a6a70;font-size:11px;cursor:pointer",
+    },
+    [devCheck, el("span", { text: "Developer mode" })],
+  );
+
+  // Compose the panel in display order, then mount it once.
+  [
+    mkLabel("History window"),
+    windowValue,
+    slider,
+    ticks,
+    windowHint,
+    instanceHeader,
+    instanceHint,
+    instanceEl,
+    signoutBtn,
+    savedNote,
+    signoutHint,
+    devToggle,
+  ].forEach((n) => settings.appendChild(n));
+  document.documentElement.appendChild(settings);
 
   slider.addEventListener("input", () => {
     cfg.windowDays = WINDOW_STEPS[parseInt(slider.value, 10)] || 0;
@@ -193,19 +276,6 @@
     persist();
   });
 
-  // Pulse instance — dev only. Commits on blur/Enter, not per keystroke.
-  const instanceHeader = mkLabel("Pulse instance");
-  const instanceHint = mkHint(
-    "Where uploads go. e.g. http://dev.pulse.sleuth.io for local dev, https://app.skills.new for production.",
-  );
-  const instanceEl = document.createElement("input");
-  instanceEl.type = "text";
-  instanceEl.placeholder = DEFAULT_INSTANCE;
-  instanceEl.style.cssText =
-    fieldCss + ";width:100%;font:12px ui-monospace,Menlo,monospace";
-  settings.appendChild(instanceHeader);
-  settings.appendChild(instanceHint);
-  settings.appendChild(instanceEl);
   // Commit only on blur/Enter so transient or invalid mid-edit values never
   // become the upload target. Empty falls back to the default; anything that
   // isn't a valid http(s) URL reverts to the last saved value.
@@ -235,20 +305,6 @@
     if (e.key === "Enter") instanceEl.blur();
   });
 
-  // Account — Sign out lives behind dev mode (most users never need it).
-  const signoutBtn = document.createElement("button");
-  signoutBtn.textContent = "Sign out";
-  signoutBtn.style.cssText =
-    "margin-top:8px;padding:7px 14px;background:#7a3b3b;color:#fff;border:none;border-radius:6px;cursor:pointer;font:13px system-ui";
-  const savedNote = document.createElement("span");
-  savedNote.style.cssText = "margin-left:10px;color:#7fd18a;font-size:12px";
-  settings.appendChild(signoutBtn);
-  settings.appendChild(savedNote);
-  const signoutHint = mkHint(
-    "Authorization happens automatically on your first scan (an approval tab opens). Sign out clears the cached token — use it after switching instances.",
-  );
-  settings.appendChild(signoutHint);
-
   const flash = (msg) => {
     savedNote.textContent = msg;
     setTimeout(() => (savedNote.textContent = ""), 1500);
@@ -256,21 +312,6 @@
   signoutBtn.addEventListener("click", () => {
     chrome.storage.local.remove("auth", () => flash("Signed out."));
   });
-
-  // Subtle dev-mode toggle: reveals the instance field + all help text.
-  const devToggle = document.createElement("label");
-  devToggle.style.cssText =
-    "display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:12px;" +
-    "padding-top:10px;border-top:1px solid #2c2c30;color:#6a6a70;font-size:11px;cursor:pointer";
-  const devCheck = document.createElement("input");
-  devCheck.type = "checkbox";
-  devCheck.style.cssText = "margin:0;accent-color:#6a6a70;cursor:pointer";
-  const devText = document.createElement("span");
-  devText.textContent = "Developer mode";
-  devToggle.appendChild(devCheck);
-  devToggle.appendChild(devText);
-  settings.appendChild(devToggle);
-  document.documentElement.appendChild(settings);
 
   const devOnly = [
     windowHint,
@@ -284,7 +325,7 @@
   const applyDevMode = () => {
     const on = !!cfg.devMode;
     devCheck.checked = on;
-    devOnly.forEach((el) => (el.style.display = on ? "" : "none"));
+    devOnly.forEach((node) => (node.style.display = on ? "" : "none"));
   };
   devCheck.addEventListener("change", () => {
     cfg.devMode = devCheck.checked;
@@ -307,28 +348,27 @@
     }
     settings.style.display = showing ? "none" : "block";
   });
-  // Split button: the wide main part runs the scan; the narrow ⚙ part toggles
-  // the settings popover. Both live in one rounded bar with a divider between,
-  // so it reads as a single control.
-  btn.style.cssText =
-    "padding:8px 14px;background:#da7756;color:#fff;border:none;cursor:pointer;" +
-    "font:13px system-ui,sans-serif;border-right:1px solid rgba(0,0,0,.18)";
-  gear.style.cssText =
-    "padding:8px 11px 8px 9px;background:#c4634a;color:#fff;border:none;cursor:pointer;" +
-    "font:18px system-ui;line-height:1;display:flex;align-items:center";
-  const bar = document.createElement("div");
-  bar.style.cssText =
-    "position:fixed;z-index:2147483647;bottom:16px;right:16px;display:inline-flex;" +
-    "border-radius:8px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.35)";
-  bar.appendChild(btn);
-  bar.appendChild(gear);
+
+  // Split button: the wide main part runs the scan; the narrow ⚙ toggles the
+  // settings popover. Both live in one rounded bar so it reads as one control.
+  const bar = el(
+    "div",
+    {
+      style:
+        "position:fixed;z-index:2147483647;bottom:16px;right:16px;display:inline-flex;" +
+        "border-radius:8px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.35)",
+    },
+    [btn, gear],
+  );
   document.documentElement.appendChild(bar);
 
-  const panel = document.createElement("div");
-  panel.style.cssText =
-    "position:fixed;z-index:2147483647;bottom:56px;right:16px;width:340px;max-height:260px;" +
-    "overflow:auto;display:none;padding:8px;background:#1d1d1f;color:#eaeaea;border-radius:8px;" +
-    "font:11px ui-monospace,Menlo,monospace;white-space:pre-wrap;box-shadow:0 2px 10px rgba(0,0,0,.35)";
+  // Status log popover — shares the gear's anchor; scan() writes progress here.
+  const panel = el("div", {
+    style:
+      "position:fixed;z-index:2147483647;bottom:56px;right:16px;width:340px;max-height:260px;" +
+      "overflow:auto;display:none;padding:8px;background:#1d1d1f;color:#eaeaea;border-radius:8px;" +
+      "font:11px ui-monospace,Menlo,monospace;white-space:pre-wrap;box-shadow:0 2px 10px rgba(0,0,0,.35)",
+  });
   document.documentElement.appendChild(panel);
   // Append as a text node (not textContent +=) so DOM children like the report
   // link aren't wiped on the next log line.
@@ -338,6 +378,7 @@
     panel.scrollTop = panel.scrollHeight;
   };
 
+  // ---- HTTP helpers ------------------------------------------------------
   async function getJSON(url, extraHeaders) {
     const r = await fetch(url, {
       credentials: "include",
@@ -388,6 +429,7 @@
     return out;
   }
 
+  // ---- Scan orchestration ------------------------------------------------
   async function scan() {
     // Take over the popover: drop the settings view, show a fresh log, and lock
     // the ⚙ so settings can't reopen mid-scan.
@@ -446,14 +488,16 @@
             resp.sessions +
             " sessions. Analysis is running — open the report:",
         );
-        const a = document.createElement("a");
-        a.href = resp.reportUrl;
-        a.target = "_blank";
-        a.rel = "noopener";
-        a.textContent = "▶ Open report (streams live, then shows the result)";
-        a.style.cssText =
-          "display:inline-block;margin-top:8px;color:#ffd9b0;font-weight:600";
-        panel.appendChild(a);
+        panel.appendChild(
+          el("a", {
+            href: resp.reportUrl,
+            target: "_blank",
+            rel: "noopener",
+            text: "▶ Open report (streams live, then shows the result)",
+            style:
+              "display:inline-block;margin-top:8px;color:#ffd9b0;font-weight:600",
+          }),
+        );
       } else {
         log("Upload failed: " + (resp && resp.error));
       }
