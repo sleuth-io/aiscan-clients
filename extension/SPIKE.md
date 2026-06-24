@@ -81,12 +81,14 @@ background worker, which holds host permissions for the instance.
 
 ## Known spike shortcuts (not the v2 design)
 
-- The extension **transcodes** claude.ai → Claude Code JSONL (`transcodeConversation` in
-  `background.js`) and uploads `source=claude-code`, so web sessions are attributed as Claude
-  Code in the report. The real v2 server would expose a dedicated versioned `claude-web` parser
-  (and `source` value) mapping straight to the normalized session model.
+- The extension **transcodes** web conversations → Claude Code JSONL (`transcodeConversation` /
+  `transcodeChatGPTConversation` in `background.js`) and uploads them with `source=claude-web` or
+  `source=chatgpt-web`. The server reuses the Claude Code parser for the JSONL shape but stamps
+  the upload's source onto each session, so the report attributes them correctly. The real v2
+  server would expose dedicated versioned `claude-web` / `chatgpt-web` parsers mapping straight to
+  the normalized session model.
 - No on-device redaction yet; raw transcript text is uploaded (it's PII and stays server-side).
-- No pagination on the conversation list endpoint yet.
+- The claude.ai conversation list isn't paged (chatgpt.com's is).
 - claude.ai carries no token usage, so cost/token columns stay zero.
 - Per-message model isn't recorded by the API; the conversation-level model is applied to all
   assistant turns.

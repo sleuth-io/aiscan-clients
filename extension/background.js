@@ -407,12 +407,16 @@ async function upload(msg, tabId) {
     : [];
 
   // The content script tags each batch with its provider so we transcode with
-  // the matching mapper and file the sessions under a provider-specific dir.
+  // the matching mapper, file the sessions under a provider-specific dir, and
+  // report the right origin to the server (which records it as the session
+  // "source" for the report's "Where it happened" — these are web sessions, not
+  // the Claude Code CLI).
   const isChatGPT = msg.provider === "chatgpt";
   const transcode = isChatGPT
     ? transcodeChatGPTConversation
     : transcodeConversation;
   const dir = isChatGPT ? "projects/chatgpt/" : "projects/claude-ai/";
+  const source = isChatGPT ? "chatgpt-web" : "claude-web";
   const idOf = (conv) =>
     isChatGPT ? conv.conversation_id || conv.id : conv.uuid;
 
@@ -433,7 +437,9 @@ async function upload(msg, tabId) {
   const windowDays = msg.windowDays || 0;
   const url =
     instanceUrl +
-    "/api/aiscan/ingest?source=claude-code&window_days=" +
+    "/api/aiscan/ingest?source=" +
+    encodeURIComponent(source) +
+    "&window_days=" +
     windowDays;
   const res = await fetch(url, {
     method: "POST",
