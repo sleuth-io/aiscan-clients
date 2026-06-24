@@ -94,6 +94,123 @@ function transcodeConversation(conv, capturedAt) {
 }
 
 // ---------------------------------------------------------------------------
+// chatgpt.com -> Claude Code JSONL transcode. ChatGPT stores a conversation as
+// a TREE: `mapping` is a map of node id -> { message, parent, children } and
+// `current_node` is the leaf of the active branch (edits/regenerations create
+// sibling branches). We linearize the active branch by walking parent pointers
+// from `current_node` to the root, then map each node onto the same Claude Code
+// event lines the claude.ai transcoder emits, so the server's detector counts
+// tool/MCP usage identically.
+// ---------------------------------------------------------------------------
+
+function chatgptActiveBranch(conv) {
+  const mapping = conv.mapping || {};
+  const order = [];
+  const seen = new Set();
+  let nodeId = conv.current_node;
+  while (nodeId && mapping[nodeId] && !seen.has(nodeId)) {
+    seen.add(nodeId);
+    order.push(mapping[nodeId]);
+    nodeId = mapping[nodeId].parent;
+  }
+  order.reverse(); // root -> leaf
+  return order.map((n) => n && n.message).filter(Boolean);
+}
+
+// ChatGPT create_time is float epoch seconds; the JSONL wants an ISO string.
+function epochToIso(sec, fallback) {
+  if (typeof sec !== "number" || !isFinite(sec)) return fallback;
+  return new Date(sec * 1000).toISOString();
+}
+
+function transcodeChatGPTConversation(conv, capturedAt) {
+  const sessionId = conv.conversation_id || conv.id;
+  if (!sessionId) return "";
+  const convModel = conv.default_model_slug || "chatgpt";
+
+  const lines = [];
+  for (const m of chatgptActiveBranch(conv)) {
+    const role = m.author && m.author.role;
+    const meta = m.metadata || {};
+    // Skip the hidden system/scaffolding turns ChatGPT injects (custom
+    // instructions, tool boilerplate) — they're empty and not user content.
+    if (role === "system" || meta.is_visually_hidden_from_conversation)
+      continue;
+
+    const content = m.content || {};
+    const ctype = content.content_type;
+    const parts = Array.isArray(content.parts) ? content.parts : [];
+    const textOf = () =>
+      parts
+        .map((p) => (typeof p === "string" ? p : ""))
+        .filter(Boolean)
+        .join("\n");
+    const ts = epochToIso(m.create_time, capturedAt);
+
+    if (role === "user") {
+      const text = textOf();
+      if (!text) continue;
+      lines.push(
+        JSON.stringify({
+          timestamp: ts,
+          sessionId,
+          cwd: "chatgpt.com",
+          type: "user",
+          message: { role: "user", content: text },
+        }),
+      );
+      continue;
+    }
+
+    if (role === "assistant") {
+      const out = [];
+      if (ctype === "thoughts") {
+        // gpt-5 reasoning summaries: parts are { summary, content } objects.
+        const t = parts
+          .map((p) =>
+            typeof p === "string" ? p : (p && (p.content || p.summary)) || "",
+          )
+          .filter(Boolean)
+          .join("\n");
+        if (t) out.push({ type: "thinking", text: t });
+      } else if (ctype === "code" && m.recipient && m.recipient !== "all") {
+        // A tool call: `recipient` names the tool (e.g. api_tool.call_tool,
+        // web.search, python); `content.text` is the JSON args.
+        let input;
+        try {
+          input = JSON.parse(content.text);
+        } catch (_) {
+          input = { raw: content.text || "" };
+        }
+        out.push({ type: "tool_use", name: m.recipient, input });
+      } else {
+        // Plain answer text (content_type "text"), or a code block addressed to
+        // the user — either way surface it as text.
+        const t = ctype === "code" ? content.text || "" : textOf();
+        if (t) out.push({ type: "text", text: t });
+      }
+      if (!out.length) continue;
+      lines.push(
+        JSON.stringify({
+          timestamp: ts,
+          sessionId,
+          cwd: "chatgpt.com",
+          type: "assistant",
+          message: {
+            id: m.id || sessionId,
+            model: meta.model_slug || convModel,
+            role: "assistant",
+            content: out,
+          },
+        }),
+      );
+    }
+    // role "tool" (tool results) is dropped, mirroring the claude.ai transcoder.
+  }
+  return lines.length ? lines.join("\n") + "\n" : "";
+}
+
+// ---------------------------------------------------------------------------
 // tar + gzip — the upload body is a gzipped tar mirroring ~/.claude/projects,
 // with each session at projects/claude-ai/<uuid>.jsonl. The server only
 // extracts regular file members, so no directory entries are needed.
@@ -289,11 +406,21 @@ async function upload(msg, tabId) {
     ? msg.conversations
     : [];
 
+  // The content script tags each batch with its provider so we transcode with
+  // the matching mapper and file the sessions under a provider-specific dir.
+  const isChatGPT = msg.provider === "chatgpt";
+  const transcode = isChatGPT
+    ? transcodeChatGPTConversation
+    : transcodeConversation;
+  const dir = isChatGPT ? "projects/chatgpt/" : "projects/claude-ai/";
+  const idOf = (conv) =>
+    isChatGPT ? conv.conversation_id || conv.id : conv.uuid;
+
   const files = [];
   conversations.forEach((conv, i) => {
-    const jsonl = transcodeConversation(conv, capturedAt);
+    const jsonl = transcode(conv, capturedAt);
     if (!jsonl) return;
-    const name = "projects/claude-ai/" + (conv.uuid || "conv-" + i) + ".jsonl";
+    const name = dir + (idOf(conv) || "conv-" + i) + ".jsonl";
     files.push({ name, data: jsonl });
   });
   if (!files.length)
@@ -339,7 +466,9 @@ async function upload(msg, tabId) {
 // page itself, injected by content.js — there is no popup. Clicking the toolbar
 // icon just focuses an existing claude.ai tab, or opens one if none is around.
 chrome.action.onClicked.addListener(async () => {
-  const tabs = await chrome.tabs.query({ url: "https://claude.ai/*" });
+  const tabs = await chrome.tabs.query({
+    url: ["https://claude.ai/*", "https://chatgpt.com/*"],
+  });
   // Some matched tabs (e.g. devtools) can lack a usable id; fall through to
   // opening a fresh tab rather than throwing on an undefined id.
   const tab = tabs.find((t) => t && t.id != null);

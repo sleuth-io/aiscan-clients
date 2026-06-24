@@ -20,6 +20,87 @@
   // is read by background.js to know where to authorize and upload.
   let cfg = { windowDays: 7, instanceUrl: DEFAULT_INSTANCE };
 
+  // ---- Provider adapters -------------------------------------------------
+  // claude.ai and chatgpt.com expose different chat APIs, but the scan flow is
+  // identical: list conversations -> filter by the history window -> fetch each
+  // transcript -> hand the batch to the background worker. Each adapter knows
+  // only how to list and fetch on its own origin (where the page's cookies /
+  // token apply). The adapter's `name` is sent to background.js so it picks the
+  // matching transcoder. Detection is purely by hostname.
+  const PROVIDERS = {
+    "claude.ai": {
+      name: "claude-ai",
+      label: "claude.ai",
+      async listConversations() {
+        // Chat lives under the org with the "chat" capability (see findOrg).
+        this.org = await findOrg();
+        const list = await getJSON(
+          "/api/organizations/" + this.org + "/chat_conversations",
+        );
+        return (Array.isArray(list) ? list : []).map((c) => ({
+          id: c.uuid,
+          updated_at: c.updated_at,
+          created_at: c.created_at,
+        }));
+      },
+      fetchFull(item) {
+        return getJSON(
+          "/api/organizations/" +
+            this.org +
+            "/chat_conversations/" +
+            item.id +
+            "?tree=True&rendering_mode=messages&render_all_tools=true",
+        );
+      },
+    },
+    "chatgpt.com": {
+      name: "chatgpt",
+      label: "chatgpt.com",
+      // Unlike claude.ai, /backend-api is Bearer-authed — cookies alone 401. The
+      // token is minted by the first-party /api/auth/session endpoint (cookie
+      // auth) and reused for every call in this scan.
+      async token() {
+        if (!this._token) {
+          const s = await getJSON("/api/auth/session");
+          this._token = s && s.accessToken;
+          if (!this._token) throw new Error("not signed in to chatgpt.com");
+        }
+        return this._token;
+      },
+      async listConversations() {
+        const headers = { authorization: "Bearer " + (await this.token()) };
+        // The list endpoint is paged; walk offset until we've seen `total`.
+        const limit = 100;
+        let offset = 0;
+        const all = [];
+        for (;;) {
+          const j = await getJSON(
+            "/backend-api/conversations?offset=" +
+              offset +
+              "&limit=" +
+              limit +
+              "&order=updated",
+            headers,
+          );
+          const items = (j && j.items) || [];
+          all.push(...items);
+          offset += items.length;
+          if (!items.length || offset >= ((j && j.total) || all.length)) break;
+        }
+        return all.map((c) => ({
+          id: c.id,
+          updated_at: c.update_time,
+          created_at: c.create_time,
+        }));
+      },
+      async fetchFull(item) {
+        const headers = { authorization: "Bearer " + (await this.token()) };
+        return getJSON("/backend-api/conversation/" + item.id, headers);
+      },
+    },
+  };
+  const provider = PROVIDERS[location.hostname] || PROVIDERS["claude.ai"];
+
   const btn = document.createElement("button");
   btn.textContent = "Scan and upload my chats";
   // The window scope no longer fits the label (the main button now reads as a
@@ -27,10 +108,12 @@
   function updateLabel() {
     btn.title =
       cfg.windowDays > 0
-        ? "Scans your claude.ai sessions from the last " +
+        ? "Scans your " +
+          provider.label +
+          " sessions from the last " +
           cfg.windowDays +
           " days"
-        : "Scans all your claude.ai sessions";
+        : "Scans all your " + provider.label + " sessions";
   }
   updateLabel();
 
@@ -95,7 +178,7 @@
   });
   settings.appendChild(ticks);
   const windowHint = mkHint(
-    "How far back to scan, for claude.ai web and local Claude Code sessions.",
+    "How far back to scan your " + provider.label + " sessions.",
   );
   settings.appendChild(windowHint);
 
@@ -251,10 +334,10 @@
     panel.scrollTop = panel.scrollHeight;
   };
 
-  async function getJSON(url) {
+  async function getJSON(url, extraHeaders) {
     const r = await fetch(url, {
       credentials: "include",
-      headers: { accept: "application/json" },
+      headers: Object.assign({ accept: "application/json" }, extraHeaders || {}),
     });
     if (!r.ok) throw new Error(r.status + " " + r.statusText + " — " + url);
     return r.json();
@@ -311,18 +394,13 @@
     panel.textContent = "";
     panel.style.display = "block";
     try {
-      log("Finding organization…");
-      const org = await findOrg();
-      log("  org = " + org);
-
-      log("Listing conversations…");
-      let list = await getJSON(
-        "/api/organizations/" + org + "/chat_conversations",
-      );
+      log("Listing " + provider.label + " conversations…");
+      let list = await provider.listConversations();
       const total = list.length;
       log("  found " + total + " conversations");
       if (!total) return;
-      // Keep only conversations active within the window (by last update).
+      // Keep only conversations active within the window (by last update). Both
+      // providers report ISO timestamps here (normalized in their adapters).
       if (cfg.windowDays > 0) {
         const cutoff = Date.now() - cfg.windowDays * 24 * 60 * 60 * 1000;
         list = list.filter((c) => {
@@ -343,14 +421,8 @@
 
       log("Fetching transcripts…");
       let done = 0;
-      const conversations = await mapLimit(list, CONCURRENCY, async (c) => {
-        const full = await getJSON(
-          "/api/organizations/" +
-            org +
-            "/chat_conversations/" +
-            c.uuid +
-            "?tree=True&rendering_mode=messages&render_all_tools=true",
-        );
+      const conversations = await mapLimit(list, CONCURRENCY, async (item) => {
+        const full = await provider.fetchFull(item);
         done++;
         if (done % 5 === 0 || done === list.length)
           log("  " + done + "/" + list.length);
@@ -360,6 +432,7 @@
       log("Uploading " + conversations.length + " conversations…");
       const resp = await chrome.runtime.sendMessage({
         type: "upload",
+        provider: provider.name,
         conversations,
         windowDays: cfg.windowDays,
       });

@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "aiscan claude.ai capture",
-  "version": "0.0.2",
-  "description": "Pull your claude.ai conversations and upload them to a Pulse aiscan instance for analysis.",
+  "name": "aiscan chat capture",
+  "version": "0.0.3",
+  "description": "Pull your claude.ai and chatgpt.com conversations and upload them to a Pulse aiscan instance for analysis.",
   "permissions": ["storage", "tabs"],
   "host_permissions": [
     "https://claude.ai/*",
+    "https://chatgpt.com/*",
     "http://dev.pulse.sleuth.io/*",
     "https://dev.pulse.sleuth.io/*",
     "https://app.skills.new/*"
@@ -13,13 +14,13 @@
   "background": { "service_worker": "background.js", "scripts": ["background.js"] },
   "content_scripts": [
     {
-      "matches": ["https://claude.ai/*"],
+      "matches": ["https://claude.ai/*", "https://chatgpt.com/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],
   "action": {
-    "default_title": "aiscan — open claude.ai to scan"
+    "default_title": "aiscan — open claude.ai or chatgpt.com to scan"
   },
   "browser_specific_settings": {
     "gecko": { "id": "aiscan-spike@sleuth.io", "strict_min_version": "115.0" }
