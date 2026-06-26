@@ -10,6 +10,13 @@ DESKTOP := desktop
 BINARY  := aiscan
 PREFIX  ?= $(HOME)/.local
 
+# Version metadata stamped into the binary (see internal/buildinfo).
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE    ?= $(shell date -u +%Y-%m-%d)
+BI      := github.com/sleuth-io/aiscan-clients/desktop/internal/buildinfo
+LDFLAGS := -ldflags "-X $(BI).Version=$(VERSION) -X $(BI).Commit=$(COMMIT) -X $(BI).Date=$(DATE)"
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -19,7 +26,7 @@ help: ## List targets
 
 .PHONY: build
 build: ## Build the desktop binary into desktop/bin (pure Go)
-	cd $(DESKTOP) && CGO_ENABLED=0 go build -o bin/$(BINARY) ./cmd/aiscan
+	cd $(DESKTOP) && CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(BINARY) ./cmd/aiscan
 
 .PHONY: install
 install: build ## Build and copy the desktop binary to $(PREFIX)/bin

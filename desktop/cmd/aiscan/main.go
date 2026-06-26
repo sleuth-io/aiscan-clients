@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/sleuth-io/aiscan-clients/desktop/internal/buildinfo"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/cli"
 )
 
@@ -24,6 +25,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+	case "version", "-v", "--version":
+		fmt.Println(buildinfo.String())
 	default:
 		usage()
 		os.Exit(2)
@@ -31,5 +34,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: aiscan capture [--out DIR] [--window-days N]")
+	fmt.Fprintln(os.Stderr, "usage: aiscan <command>")
+	fmt.Fprintln(os.Stderr, "  capture [--out DIR] [--window-days N]   collect local AI usage")
+	fmt.Fprintln(os.Stderr, "  version | -v | --version                print version")
 }
