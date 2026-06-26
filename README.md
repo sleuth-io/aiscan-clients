@@ -27,6 +27,67 @@ See [`docs/transparency.md`](docs/transparency.md).
 - **Legible.** The desktop tray (and the extension popup) always show status and what was last
   uploaded.
 
+## Usage
+
+You need access to an **aiscan instance** with the `AISCAN` capability enabled for your
+org. The default instance is `https://app.skills.new`; point either client at your own with
+the instance flag/setting shown below. Both clients authorize with **device-code OAuth** — you
+approve once in the browser, and only a short-lived per-user token is stored on your machine.
+No password, API key, or secret is ever embedded.
+
+Pick the client that matches where you use AI:
+
+- **Desktop client** — analyzes **Claude Code** CLI sessions from `~/.claude/projects`.
+- **Browser extension** — analyzes **web** AI usage (claude.ai, chatgpt.com).
+
+### Desktop client (`aiscan`)
+
+Build and install the binary (Go 1.23+), then run it:
+
+    make install                       # builds + installs `aiscan` to ~/.local/bin
+    # ensure ~/.local/bin is on your PATH (make install warns if not)
+
+    aiscan login                       # authorize this machine (opens a browser to approve)
+    aiscan run                         # capture → redact → upload, then prints a report link
+
+`aiscan run` does the whole pipeline in one shot (it also authorizes on first use, so `login`
+is optional). Useful flags:
+
+    aiscan run --window-days 7         # only sessions modified in the last 7 days (0 = all)
+    aiscan run --instance https://my-instance.example.com   # target a non-default instance
+
+Want to see exactly what would be sent **before** uploading anything? `capture` is read-only
+and never uploads:
+
+    aiscan capture --window-days 7                 # print a per-source + redaction summary
+    aiscan capture --out /tmp/dump                 # also write the redacted dump to inspect
+    aiscan capture --show-redactions               # debug: list every redacted match
+
+Every run prints the **trust surface**: how many artifacts were collected and exactly what
+redaction stripped (e.g. `redacted: 27 (email 2, sk-key 18, …)`). The cached token lives at
+`<config-dir>/aiscan/token.json` (owner-only); delete it or re-run `login` to re-authorize.
+
+### Browser extension
+
+No build step — it's plain Manifest V3 JavaScript. Load it unpacked:
+
+- **Chrome:** `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the
+  [`extension/`](extension/) folder.
+- **Firefox:** `about:debugging` → **This Firefox** → **Load Temporary Add-on** → pick
+  `extension/manifest.json`.
+
+Then:
+
+1. Make sure you're **logged in** to claude.ai / chatgpt.com in the same browser.
+2. **Refresh** the tab (content scripts inject on load).
+3. Click the on-page **⚙** (bottom-right) to set the instance URL if it isn't
+   `https://app.skills.new`. A different instance must also be added to the manifest's
+   `host_permissions`.
+4. Click the orange **"aiscan: scan N"** button → approve the one-time OAuth tab → the panel
+   links you to the report.
+
+See [`extension/SPIKE.md`](extension/SPIKE.md) for the capture details.
+
 ## Developing
 
 Requires Go 1.23+ and Node (for the extension tests). Everything runs through the
@@ -35,18 +96,17 @@ single root Makefile (`make help` lists all targets):
     make test            # run all tests (Go + JS)
     make lint            # go vet
     make prepush         # format check + lint + all tests
-    make install         # build + install the `aiscan` binary to ~/.local/bin
-    make run ARGS="capture --window-days 7"   # run capture without installing
-
-After `make install`, run the client directly:
-
-    aiscan capture --window-days 7 --out /tmp/dump
+    make build           # build the `aiscan` binary into desktop/bin
+    make run ARGS="run --window-days 7"   # run a verb without installing
 
 See [`desktop/`](desktop/) and [`extension/`](extension/) for client-specific docs.
 
 ## Status
 
-Scaffold. Structure and intent are in place; implementations are in progress.
+**Browser extension:** working end-to-end (claude.ai + chatgpt.com → redact → upload).
+**Desktop client:** `login` / `capture` / `run` implemented (Claude Code capture, on-device
+redaction, device-code auth, and upload). The background agent, system tray, self-update, and
+additional capture sources (e.g. Cursor) are still to come.
 
 ## License
 

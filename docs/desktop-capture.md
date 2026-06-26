@@ -8,7 +8,9 @@ and the *why* — the rationale is not obvious from the code alone.
 The client is **thin**: `capture → redact → upload`. Parsing, normalization, analysis,
 and reporting are **all server-side**. The client stays small. **Do not add analysis to the client.**
 
-This doc covers **capture** and **redact**. Upload is still a stub today.
+This doc covers **capture** and **redact**. **Upload** (and the device-code auth it rides on)
+is implemented — `aiscan run` does capture → redact → upload, and `aiscan login` authorizes
+ahead of time; see [auth and upload](#auth-and-upload) below.
 
 ## The seam: one common Artifact type
 
@@ -58,7 +60,8 @@ desktop/internal/
   capture/capture.go        Recipe, Artifact, SourceID, Run()   — the seam
   capture/claude/claude.go  Claude Code source                  — per-source logic
   redact/redact.go          shared, source-agnostic secret stripping
-  upload/upload.go          shared, source-agnostic (stub)
+  upload/upload.go          shared, source-agnostic (gzip tar → POST /api/aiscan/ingest)
+  auth/auth.go              device-code OAuth + on-disk token cache
   cli/capture.go            `aiscan capture` verb + the recipe list
 ```
 
@@ -120,12 +123,42 @@ exclusion below. A cheap, deterministic exception worth doing is redacting the *
 local identity* (git `user.name`/`user.email`, OS user) — that catches the operator's own
 name with zero false positives, without trying to detect arbitrary names.
 
+## Auth and upload
+
+After redaction, `aiscan run` ships the dump to the server. Two shared, source-agnostic
+packages handle it:
+
+- **`auth`** — device-code OAuth (RFC 8628) against the configured instance, matching the
+  browser extension's flow so both clients use the same endpoints
+  (`/api/oauth/device-authorization/` → `/api/oauth/token/`). The client is the public,
+  well-known `sleuth-aiscan` client and holds **no embedded secret**; the only credential it
+  stores is the short-lived access token, cached at `<config-dir>/aiscan/token.json` (mode
+  `0600`, overridable with `AISCAN_CONFIG_DIR`) until ~60s before it expires. `aiscan login`
+  front-loads the approval; `aiscan run` also authorizes on first use.
+- **`upload`** — gzips a tar of the redacted artifacts and POSTs it to
+  `{instance}/api/aiscan/ingest?source=<id>&window_days=N` with a `Bearer` token, mirroring the
+  extension's proven wire format. Each artifact's leading source-id segment is stripped so the
+  archive mirrors the tool's native layout (`claude-code/projects/p/s.jsonl` → `projects/p/s.jsonl`,
+  i.e. `~/.claude/projects`). A `401` clears the cached token and re-authorizes once. The server
+  returns a run id, which the client renders as a report link.
+  - **Size limit / batching.** The server streams the ingest body, so the cap is the app's
+    `MAX_UPLOAD_BYTES` (50 MiB on the *compressed* body). The client packs under `MaxCompressedBytes`
+    (45 MiB, measured) so a typical history uploads as a **single** batch — one scan session — and
+    only a very large one is split; as a backstop for a server or proxy that still rejects a body,
+    it halves a batch and retries on a `413`. When a capture does split, each part is a separate
+    run/report, surfaced in the CLI output.
+
+> Note: the `protocol/upload-request.schema.json` JSON envelope (client/source/redaction/payload)
+> is still **DRAFT** and not yet sent on the wire — both clients currently POST the raw gzip with
+> query params. The `redact.Summary` already exposes `ruleset_version`/`applied` for that envelope
+> when the server adopts it.
+
 ## Provenance
 
 - The capture concept is ported from the original `aiscan` scanner's `internal/detectors/*`
   — adapted to collect *raw* artifacts rather than parse them into stats.
 - Redact is new (the original never redacted on-device).
-- Upload/auth/self-update/tray will be reused from the `sx` client when those steps land.
+- Self-update/tray will be reused from the `sx` client when those steps land.
 
 Per repo rules, all of this is **copied/ported in and cleaned**, never imported as a private
 module — this repo is public.
