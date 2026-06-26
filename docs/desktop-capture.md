@@ -141,6 +141,12 @@ packages handle it:
   archive mirrors the tool's native layout (`claude-code/projects/p/s.jsonl` → `projects/p/s.jsonl`,
   i.e. `~/.claude/projects`). A `401` clears the cached token and re-authorizes once. The server
   returns a run id, which the client renders as a report link.
+  - **Size limit / batching.** The server reads the whole request body into memory, so the real
+    cap is Django's `DATA_UPLOAD_MAX_MEMORY_SIZE` (20 MiB on the *compressed* body), not the app's
+    50 MiB `MAX_UPLOAD_BYTES`. A heavy local history gzips past that, so the client splits the
+    upload into batches under `MaxCompressedBytes` (18 MiB, measured — fewest parts) and, as a
+    backstop for an even lower proxy limit, halves a batch and retries on a `413`. Each part is a
+    separate run/report, surfaced in the CLI output.
 
 > Note: the `protocol/upload-request.schema.json` JSON envelope (client/source/redaction/payload)
 > is still **DRAFT** and not yet sent on the wire — both clients currently POST the raw gzip with

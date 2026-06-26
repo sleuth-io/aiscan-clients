@@ -112,14 +112,78 @@ func Run(args []string) error {
 	}
 
 	for _, id := range sortedSourceIDs(bySource) {
-		res, err := uploadBatch(ctx, *instance, &token, id, *windowDays, bySource[id], prompt)
+		results, err := uploadSource(ctx, *instance, &token, id, *windowDays, bySource[id], prompt)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stdout, "%s %s — %s sessions → %s\n",
-			success("uploaded"), header(string(id)), bold(strconv.Itoa(res.Sessions)), accent(res.ReportURL))
+		reportResults(os.Stdout, id, results)
 	}
 	return nil
+}
+
+// uploadSource uploads one source's artifacts, first splitting them so each
+// gzipped body fits under the server's size limit (the heavy-history case), then
+// uploading each batch with adaptive fallback.
+func uploadSource(ctx context.Context, instance string, token *string, id capture.SourceID, windowDays int, arts []capture.Artifact, prompt auth.Prompt) ([]*upload.Result, error) {
+	batches, err := upload.SplitForUpload(arts, upload.MaxCompressedBytes)
+	if err != nil {
+		return nil, fmt.Errorf("pack %s: %w", id, err)
+	}
+	var out []*upload.Result
+	for _, batch := range batches {
+		rs, err := uploadAdaptive(ctx, instance, token, id, windowDays, batch, prompt)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rs...)
+	}
+	return out, nil
+}
+
+// uploadAdaptive uploads one batch, and if the server still rejects it as too
+// large (413 — e.g. a proxy caps the body below our estimate), halves the batch
+// and retries each half. A lone session that's still too big is a clear error
+// rather than an opaque 413.
+func uploadAdaptive(ctx context.Context, instance string, token *string, id capture.SourceID, windowDays int, batch []capture.Artifact, prompt auth.Prompt) ([]*upload.Result, error) {
+	res, err := uploadBatch(ctx, instance, token, id, windowDays, batch, prompt)
+	if errors.Is(err, upload.ErrPayloadTooLarge) {
+		if len(batch) <= 1 {
+			return nil, fmt.Errorf("a single %s session is too large to upload; the server rejected it (413)", id)
+		}
+		mid := len(batch) / 2
+		left, err := uploadAdaptive(ctx, instance, token, id, windowDays, batch[:mid], prompt)
+		if err != nil {
+			return nil, err
+		}
+		right, err := uploadAdaptive(ctx, instance, token, id, windowDays, batch[mid:], prompt)
+		if err != nil {
+			return nil, err
+		}
+		return append(left, right...), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return []*upload.Result{res}, nil
+}
+
+// reportResults prints the per-source upload outcome. A large history may upload
+// in several parts (the server caps body size), so each part's report is shown.
+func reportResults(w io.Writer, id capture.SourceID, results []*upload.Result) {
+	sessions := 0
+	for _, r := range results {
+		sessions += r.Sessions
+	}
+	if len(results) == 1 {
+		fmt.Fprintf(w, "%s %s — %s sessions → %s\n",
+			success("uploaded"), header(string(id)), bold(strconv.Itoa(sessions)), accent(results[0].ReportURL))
+		return
+	}
+	fmt.Fprintf(w, "%s %s — %s sessions in %s parts (server size limit):\n",
+		success("uploaded"), header(string(id)), bold(strconv.Itoa(sessions)), bold(strconv.Itoa(len(results))))
+	for _, r := range results {
+		fmt.Fprintf(w, "  %s %s sessions → %s\n", dim("part:"), strconv.Itoa(r.Sessions), accent(r.ReportURL))
+	}
 }
 
 // uploadBatch uploads one source's artifacts, re-authorizing once if the server

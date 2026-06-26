@@ -1,8 +1,13 @@
 package cli
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -72,5 +77,66 @@ func TestUploadBatch_ReauthorizesOn401(t *testing.T) {
 	}
 	if !prompted {
 		t.Error("re-auth prompt was not invoked")
+	}
+}
+
+// TestUploadAdaptive_SplitsOn413 verifies the heavy-history path: a server that
+// rejects any body with more than two sessions (413) drives the client to halve
+// the batch until every part fits — covering all sessions across several runs.
+func TestUploadAdaptive_SplitsOn413(t *testing.T) {
+	var runs int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/aiscan/ingest" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		gz, err := gzip.NewReader(bytes.NewReader(b))
+		if err != nil {
+			t.Fatalf("gzip: %v", err)
+		}
+		tr := tar.NewReader(gz)
+		members := 0
+		for {
+			if _, e := tr.Next(); e != nil {
+				break
+			}
+			members++
+		}
+		if members > 2 {
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		n := atomic.AddInt32(&runs, 1)
+		fmt.Fprintf(w, `{"run":"r%d"}`, n)
+	}))
+	defer srv.Close()
+
+	arts := make([]capture.Artifact, 5)
+	for i := range arts {
+		arts[i] = capture.Artifact{Source: capture.SourceClaudeCode, Path: fmt.Sprintf("claude-code/projects/p/s%d.jsonl", i), Data: []byte("x\n")}
+	}
+
+	token := "tok"
+	results, err := uploadAdaptive(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, arts, func(string, string) {})
+	if err != nil {
+		t.Fatalf("uploadAdaptive: %v", err)
+	}
+	sessions := 0
+	seen := map[string]bool{}
+	for _, r := range results {
+		sessions += r.Sessions
+		if r.RunID == "" || seen[r.RunID] {
+			t.Errorf("missing or duplicate run id: %#v", r)
+		}
+		seen[r.RunID] = true
+	}
+	if sessions != 5 {
+		t.Errorf("uploaded %d sessions across parts, want 5", sessions)
+	}
+	for _, r := range results {
+		if r.Sessions > 2 {
+			t.Errorf("a part carried %d sessions, server cap is 2", r.Sessions)
+		}
 	}
 }

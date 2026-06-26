@@ -32,12 +32,25 @@ import (
 // Callers should clear the cached token and re-authorize before retrying.
 var ErrUnauthorized = errors.New("upload: unauthorized (token rejected)")
 
+// ErrPayloadTooLarge is returned when the server rejects the body as too large
+// (413). Callers should split the batch into smaller uploads and retry — the
+// server's exact size limit is not known to the client.
+var ErrPayloadTooLarge = errors.New("upload: payload too large (413)")
+
 // requestTimeout bounds a single ingest POST so a stalled server can't hang the
 // client forever. Generous because the gzipped body can be large.
 const requestTimeout = 5 * time.Minute
 
 // maxErrorBody caps how much of an error response we read into a message.
 const maxErrorBody = 64 << 10
+
+// MaxCompressedBytes is the largest gzipped body a single ingest POST should
+// carry. The server reads the whole request body into memory, so Django's
+// DATA_UPLOAD_MAX_MEMORY_SIZE (20 MiB) — not the app's 50 MiB MAX_UPLOAD_BYTES —
+// is the real gate: a larger body is rejected with a 413 before the view runs.
+// We stay a few MiB under it; a heavy local history is split into several
+// uploads (see SplitForUpload).
+const MaxCompressedBytes = 18 << 20
 
 // Params configures a single upload.
 type Params struct {
@@ -95,6 +108,9 @@ func Upload(ctx context.Context, p Params) (*Result, error) {
 	if res.StatusCode == http.StatusUnauthorized {
 		return nil, ErrUnauthorized
 	}
+	if res.StatusCode == http.StatusRequestEntityTooLarge {
+		return nil, ErrPayloadTooLarge
+	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, fmt.Errorf("upload: ingest %d: %s", res.StatusCode, strings.TrimSpace(string(respBody)))
 	}
@@ -108,6 +124,36 @@ func Upload(ctx context.Context, p Params) (*Result, error) {
 		reportURL = instance + "/aiscan/" + parsed.Run
 	}
 	return &Result{ReportURL: reportURL, RunID: parsed.Run, Sessions: len(p.Artifacts)}, nil
+}
+
+// SplitForUpload groups arts into batches whose gzipped tar body each stays at
+// or below maxCompressed bytes, so every batch fits in one ingest POST. It
+// measures the actual compressed size (rather than guessing a ratio) and halves
+// a too-big group, so batches are as large as the limit allows — the fewest
+// uploads, hence the fewest separate reports. A single artifact whose own
+// compressed body still exceeds the limit is returned alone; the caller decides
+// what to do if the server then rejects it.
+func SplitForUpload(arts []capture.Artifact, maxCompressed int) ([][]capture.Artifact, error) {
+	if len(arts) == 0 {
+		return nil, nil
+	}
+	body, err := buildTarGz(arts)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) <= maxCompressed || len(arts) == 1 {
+		return [][]capture.Artifact{arts}, nil
+	}
+	mid := len(arts) / 2
+	left, err := SplitForUpload(arts[:mid], maxCompressed)
+	if err != nil {
+		return nil, err
+	}
+	right, err := SplitForUpload(arts[mid:], maxCompressed)
+	if err != nil {
+		return nil, err
+	}
+	return append(left, right...), nil
 }
 
 // buildTarGz writes the artifacts into a gzipped tar of regular-file members.

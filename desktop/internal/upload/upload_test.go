@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -100,6 +101,73 @@ func TestUpload_PostsAndParsesRun(t *testing.T) {
 	}
 	if res.RunID != "run-123" || res.ReportURL != srv.URL+"/aiscan/run-123" || res.Sessions != 2 {
 		t.Errorf("result = %#v", res)
+	}
+}
+
+// randArts returns n artifacts each carrying size bytes of incompressible data,
+// so gzip can't shrink them and compressed size tracks the byte count — letting
+// the test force splits deterministically.
+func randArts(t *testing.T, n, size int) []capture.Artifact {
+	t.Helper()
+	r := rand.New(rand.NewSource(1)) // fixed seed: deterministic
+	out := make([]capture.Artifact, n)
+	for i := range out {
+		b := make([]byte, size)
+		r.Read(b)
+		out[i] = capture.Artifact{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s.jsonl", Data: b}
+	}
+	return out
+}
+
+func TestSplitForUpload_KeepsBatchesUnderLimit(t *testing.T) {
+	in := randArts(t, 10, 4096) // ~40 KiB incompressible total
+	const max = 12 << 10        // 12 KiB ceiling → expect ~4 batches
+
+	batches, err := SplitForUpload(in, max)
+	if err != nil {
+		t.Fatalf("SplitForUpload: %v", err)
+	}
+	if len(batches) < 2 {
+		t.Fatalf("expected the oversized set to be split, got %d batch(es)", len(batches))
+	}
+	total := 0
+	for _, b := range batches {
+		body, err := buildTarGz(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Multi-artifact batches must fit; a lone artifact may legitimately exceed.
+		if len(b) > 1 && len(body) > max {
+			t.Errorf("batch of %d compresses to %d > %d", len(b), len(body), max)
+		}
+		total += len(b)
+	}
+	if total != len(in) {
+		t.Errorf("batches cover %d artifacts, want %d", total, len(in))
+	}
+}
+
+func TestSplitForUpload_LoneOversizedArtifact(t *testing.T) {
+	in := randArts(t, 1, 8192)
+	batches, err := SplitForUpload(in, 1024) // far below the single artifact's size
+	if err != nil {
+		t.Fatalf("SplitForUpload: %v", err)
+	}
+	if len(batches) != 1 || len(batches[0]) != 1 {
+		t.Fatalf("a lone oversized artifact should be returned alone, got %#v", batches)
+	}
+}
+
+func TestUpload_PayloadTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		w.Write([]byte("<html>413</html>"))
+	}))
+	defer srv.Close()
+
+	_, err := Upload(context.Background(), Params{InstanceURL: srv.URL, Token: "x", Source: capture.SourceClaudeCode, Artifacts: arts()})
+	if !errors.Is(err, ErrPayloadTooLarge) {
+		t.Fatalf("want ErrPayloadTooLarge, got %v", err)
 	}
 }
 
