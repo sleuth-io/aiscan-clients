@@ -45,12 +45,13 @@ const requestTimeout = 5 * time.Minute
 const maxErrorBody = 64 << 10
 
 // MaxCompressedBytes is the largest gzipped body a single ingest POST should
-// carry. The server reads the whole request body into memory, so Django's
-// DATA_UPLOAD_MAX_MEMORY_SIZE (20 MiB) — not the app's 50 MiB MAX_UPLOAD_BYTES —
-// is the real gate: a larger body is rejected with a 413 before the view runs.
-// We stay a few MiB under it; a heavy local history is split into several
-// uploads (see SplitForUpload).
-const MaxCompressedBytes = 18 << 20
+// carry. The server streams the request body now (it no longer reads it through
+// request.body), so the gate is the app's own MAX_UPLOAD_BYTES (50 MiB) rather
+// than Django's much smaller DATA_UPLOAD_MAX_MEMORY_SIZE. We stay a few MiB under
+// it so a typical history uploads as a single batch — one scan session — and
+// only a very large one is split (see SplitForUpload). The CLI's adaptive 413
+// fallback still covers a server or proxy that rejects a body below this.
+const MaxCompressedBytes = 45 << 20
 
 // Params configures a single upload.
 type Params struct {
