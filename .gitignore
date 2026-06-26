@@ -1,5 +1,6 @@
 # Go
 /desktop/aiscan
+/desktop/bin/
 /desktop/dist/
 *.test
 *.prof
