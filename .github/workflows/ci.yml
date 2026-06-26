@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main, claude-ai-capture-spike]
+  pull_request:
+
+jobs:
+  desktop:
+    name: Desktop (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: desktop/go.mod
+
+      - name: Format check
+        run: make fmtcheck
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test-desktop
+
+      - name: Build
+        run: make build
+
+  extension:
+    name: Extension (JS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Test
+        run: make test-extension
