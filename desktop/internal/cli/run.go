@@ -119,14 +119,13 @@ func Run(args []string) error {
 // uploadAll uploads the whole (possibly multi-source) capture as one dump,
 // splitting it only when it exceeds the server's size limit.
 func uploadAll(ctx context.Context, instance string, token *string, windowDays int, arts []capture.Artifact, prompt auth.Prompt) ([]*upload.Result, error) {
-	id := uploadSourceLabel(arts)
 	batches, err := upload.SplitForUpload(arts, upload.MaxCompressedBytes)
 	if err != nil {
 		return nil, fmt.Errorf("pack: %w", err)
 	}
 	var out []*upload.Result
 	for _, batch := range batches {
-		rs, err := uploadAdaptive(ctx, instance, token, id, windowDays, batch, prompt)
+		rs, err := uploadAdaptive(ctx, instance, token, windowDays, batch, prompt)
 		if err != nil {
 			return nil, err
 		}
@@ -136,9 +135,10 @@ func uploadAll(ctx context.Context, instance string, token *string, windowDays i
 }
 
 // uploadSourceLabel picks the nominal upload-level source for a (possibly mixed)
-// dump: the source contributing the most artifacts. The tar still carries each
+// batch: the source contributing the most artifacts. The tar still carries each
 // artifact under its own tree and the server attributes sessions per parser, so
-// this label is only the upload envelope's source field.
+// this label is only the upload envelope's source field. Computed per batch (not
+// once for the whole capture) so a size-split part is labeled by its own content.
 func uploadSourceLabel(arts []capture.Artifact) capture.SourceID {
 	counts := map[capture.SourceID]int{}
 	for _, a := range arts {
@@ -158,8 +158,8 @@ func uploadSourceLabel(arts []capture.Artifact) capture.SourceID {
 // large (413 — e.g. a proxy caps the body below our estimate), halves the batch
 // and retries each half (re-packing the halves). A lone session that's still too
 // big is a clear error rather than an opaque 413.
-func uploadAdaptive(ctx context.Context, instance string, token *string, id capture.SourceID, windowDays int, batch upload.Batch, prompt auth.Prompt) ([]*upload.Result, error) {
-	res, err := uploadBatch(ctx, instance, token, id, windowDays, batch, prompt)
+func uploadAdaptive(ctx context.Context, instance string, token *string, windowDays int, batch upload.Batch, prompt auth.Prompt) ([]*upload.Result, error) {
+	res, err := uploadBatch(ctx, instance, token, windowDays, batch, prompt)
 	if errors.Is(err, upload.ErrPayloadTooLarge) {
 		if len(batch.Artifacts) <= 1 {
 			return nil, errors.New("a single session is too large to upload; the server rejected it (413)")
@@ -172,7 +172,7 @@ func uploadAdaptive(ctx context.Context, instance string, token *string, id capt
 				return nil, err
 			}
 			for _, sub := range subBatches {
-				rs, err := uploadAdaptive(ctx, instance, token, id, windowDays, sub, prompt)
+				rs, err := uploadAdaptive(ctx, instance, token, windowDays, sub, prompt)
 				if err != nil {
 					return nil, err
 				}
@@ -226,11 +226,13 @@ func capturedSources(arts []capture.Artifact) []string {
 	return out
 }
 
-// uploadBatch uploads one source's artifacts, re-authorizing once if the server
-// rejects the token (mirrors the extension's 401 → clear → re-auth). On a
-// refresh it updates *token so later batches reuse the fresh one.
-func uploadBatch(ctx context.Context, instance string, token *string, id capture.SourceID, windowDays int, batch upload.Batch, prompt auth.Prompt) (*upload.Result, error) {
-	p := upload.Params{InstanceURL: instance, Token: *token, Source: id, WindowDays: windowDays, Artifacts: batch.Artifacts}
+// uploadBatch uploads one batch (which may carry artifacts from more than one
+// source), re-authorizing once if the server rejects the token (mirrors the
+// extension's 401 → clear → re-auth). On a refresh it updates *token so later
+// batches reuse the fresh one. The envelope's source label is derived from this
+// batch's own content so it always matches what's in the tar.
+func uploadBatch(ctx context.Context, instance string, token *string, windowDays int, batch upload.Batch, prompt auth.Prompt) (*upload.Result, error) {
+	p := upload.Params{InstanceURL: instance, Token: *token, Source: uploadSourceLabel(batch.Artifacts), WindowDays: windowDays, Artifacts: batch.Artifacts}
 	res, err := upload.UploadPacked(ctx, p, batch.Body)
 	if errors.Is(err, upload.ErrUnauthorized) {
 		_ = auth.ClearToken(instance)
