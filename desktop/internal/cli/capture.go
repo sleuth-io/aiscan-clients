@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -63,10 +64,27 @@ func Capture(args []string) error {
 		fmt.Fprintf(os.Stderr, "%s %v\n", warn("warning:"), e)
 	}
 
-	// Redact secrets before anything is shown or written — this is the only
-	// gate before the wire, so it runs by default. --no-redact is debug-only.
+	return captureRun{out: *out, noRedact: *noRedact, showRedactions: *showRedactions}.
+		process(os.Stdout, arts)
+}
+
+// captureRun holds the knobs for the post-capture stage (redact → summarize →
+// write). It is split out from flag parsing and real source collection so the
+// security-critical behavior — redaction runs before anything is written — is
+// testable against in-memory artifacts and an arbitrary writer.
+type captureRun struct {
+	out            string // directory to write the redacted dump to ("" = summarize only)
+	noRedact       bool   // debug: skip redaction entirely
+	showRedactions bool   // debug: list every redacted match
+}
+
+// process redacts the artifacts (unless noRedact), writes the trust-surface
+// summary to w, and with out set, writes the redacted artifacts to disk.
+// Redaction is the only gate before the wire, so it runs here by default and
+// only --no-redact bypasses it.
+func (c captureRun) process(w io.Writer, arts []capture.Artifact) error {
 	var redacted redact.Summary
-	if !*noRedact {
+	if !c.noRedact {
 		arts, redacted = redact.Redact(arts)
 	}
 
@@ -83,36 +101,36 @@ func Capture(args []string) error {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		fmt.Printf("%-14s %s artifacts\n", header(id), bold(strconv.Itoa(counts[capture.SourceID(id)])))
+		fmt.Fprintf(w, "%-14s %s artifacts\n", header(id), bold(strconv.Itoa(counts[capture.SourceID(id)])))
 	}
-	fmt.Printf("%s %s artifacts, %s bytes\n", dim("total:"), bold(strconv.Itoa(len(arts))), bold(strconv.Itoa(bytes)))
+	fmt.Fprintf(w, "%s %s artifacts, %s bytes\n", dim("total:"), bold(strconv.Itoa(len(arts))), bold(strconv.Itoa(bytes)))
 
 	// Redaction summary — the trust surface: what was stripped before the wire.
-	if *noRedact {
-		fmt.Println(warn("redaction: skipped (--no-redact)"))
+	if c.noRedact {
+		fmt.Fprintln(w, warn("redaction: skipped (--no-redact)"))
 	} else if n := redacted.Total(); n > 0 {
 		parts := make([]string, 0, len(redacted.Counts))
 		for _, name := range redacted.Applied() {
 			parts = append(parts, fmt.Sprintf("%s %d", name, redacted.Counts[name]))
 		}
-		fmt.Printf("%s %s (%s)\n", header("redacted:"), bold(strconv.Itoa(n)), dim(strings.Join(parts, ", ")))
+		fmt.Fprintf(w, "%s %s (%s)\n", header("redacted:"), bold(strconv.Itoa(n)), dim(strings.Join(parts, ", ")))
 	} else {
-		fmt.Println(dim("redacted: nothing matched"))
+		fmt.Fprintln(w, dim("redacted: nothing matched"))
 	}
 
 	// Debug: dump every match so false positives are visible, tagged with the
 	// artifact (project/session) it was redacted from.
-	if *showRedactions {
+	if c.showRedactions {
 		for _, m := range redacted.Matches {
-			fmt.Printf("  %s %s %s\n", dim(rpad(m.Rule, 22)), m.Text, dim("← "+m.Path))
+			fmt.Fprintf(w, "  %s %s %s\n", dim(rpad(m.Rule, 22)), m.Text, dim("← "+m.Path))
 		}
 	}
 
-	if *out != "" {
-		if err := writeArtifacts(*out, arts); err != nil {
+	if c.out != "" {
+		if err := writeArtifacts(c.out, arts); err != nil {
 			return err
 		}
-		fmt.Printf("%s %d artifacts to %s\n", success("wrote"), len(arts), *out)
+		fmt.Fprintf(w, "%s %d artifacts to %s\n", success("wrote"), len(arts), c.out)
 	}
 	return nil
 }
