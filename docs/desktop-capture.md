@@ -88,6 +88,17 @@ The dump mirrors the on-disk layout under a per-source prefix
 Reads `~/.claude/projects/**/*.jsonl`. `--window-days N` drops files modified before the
 cutoff. Non-`.jsonl` files are ignored. Raw bytes only — no parsing.
 
+### Codex (`capture/codex`)
+Reads `~/.codex/sessions/**/*.jsonl` (Codex CLI rollout transcripts, nested under
+`YYYY/MM/DD/`). Same window/extension rules, same raw-bytes contract. Files land in the dump
+under `sessions/...`; the server's `parse_codex` reads that tree.
+
+### One scan across sources
+`aiscan run` uploads every captured source in a **single** dump, not one upload per source. The
+tar carries each source under its own tree (`projects/` for Claude Code, `sessions/` for Codex);
+the server parses both and attributes each session by its own source, so a mixed capture is one
+run / one snapshot (only an oversized history is split into size-bounded parts).
+
 ### Adding a source
 1. Write `capture/<tool>/<tool>.go` exposing a `capture.Recipe`.
 2. Add one line to the `recipes` list in `cli/capture.go`.

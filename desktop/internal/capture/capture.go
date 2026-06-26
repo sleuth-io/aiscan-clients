@@ -20,6 +20,7 @@ type SourceID string
 
 const (
 	SourceClaudeCode SourceID = "claude-code"
+	SourceCodex      SourceID = "codex"
 	// SourceCursor, SourceCopilot, ... land here as they are implemented.
 )
 

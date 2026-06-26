@@ -98,36 +98,31 @@ func Run(args []string) error {
 		return nil
 	}
 
-	// Each source uploads under its own parser label, so a mixed capture sends
-	// each batch to the matching server parser.
-	bySource := map[capture.SourceID][]capture.Artifact{}
-	for _, a := range redacted {
-		bySource[a.Source] = append(bySource[a.Source], a)
-	}
-
 	prompt := devicePrompt(os.Stdout)
 	token, err := auth.EnsureToken(ctx, *instance, prompt)
 	if err != nil {
 		return fmt.Errorf("authorize: %w", err)
 	}
 
-	for _, id := range sortedSourceIDs(bySource) {
-		results, err := uploadSource(ctx, *instance, &token, id, *windowDays, bySource[id], prompt)
-		if err != nil {
-			return err
-		}
-		reportResults(os.Stdout, id, results)
+	// Upload every source together as a single dump so a mixed capture is one
+	// scan: the server parses each tree it finds (projects/ for Claude Code,
+	// sessions/ for Codex) and attributes sessions by source. Only an oversized
+	// history is split into multiple parts.
+	results, err := uploadAll(ctx, *instance, &token, *windowDays, redacted, prompt)
+	if err != nil {
+		return err
 	}
+	reportResults(os.Stdout, redacted, results)
 	return nil
 }
 
-// uploadSource uploads one source's artifacts, first splitting them so each
-// gzipped body fits under the server's size limit (the heavy-history case), then
-// uploading each batch with adaptive fallback.
-func uploadSource(ctx context.Context, instance string, token *string, id capture.SourceID, windowDays int, arts []capture.Artifact, prompt auth.Prompt) ([]*upload.Result, error) {
+// uploadAll uploads the whole (possibly multi-source) capture as one dump,
+// splitting it only when it exceeds the server's size limit.
+func uploadAll(ctx context.Context, instance string, token *string, windowDays int, arts []capture.Artifact, prompt auth.Prompt) ([]*upload.Result, error) {
+	id := uploadSourceLabel(arts)
 	batches, err := upload.SplitForUpload(arts, upload.MaxCompressedBytes)
 	if err != nil {
-		return nil, fmt.Errorf("pack %s: %w", id, err)
+		return nil, fmt.Errorf("pack: %w", err)
 	}
 	var out []*upload.Result
 	for _, batch := range batches {
@@ -140,6 +135,25 @@ func uploadSource(ctx context.Context, instance string, token *string, id captur
 	return out, nil
 }
 
+// uploadSourceLabel picks the nominal upload-level source for a (possibly mixed)
+// dump: the source contributing the most artifacts. The tar still carries each
+// artifact under its own tree and the server attributes sessions per parser, so
+// this label is only the upload envelope's source field.
+func uploadSourceLabel(arts []capture.Artifact) capture.SourceID {
+	counts := map[capture.SourceID]int{}
+	for _, a := range arts {
+		counts[a.Source]++
+	}
+	best := capture.SourceClaudeCode
+	bestN := -1
+	for _, id := range sortedSourceIDs(counts) {
+		if counts[id] > bestN {
+			best, bestN = id, counts[id]
+		}
+	}
+	return best
+}
+
 // uploadAdaptive uploads one batch, and if the server still rejects it as too
 // large (413 — e.g. a proxy caps the body below our estimate), halves the batch
 // and retries each half (re-packing the halves). A lone session that's still too
@@ -148,7 +162,7 @@ func uploadAdaptive(ctx context.Context, instance string, token *string, id capt
 	res, err := uploadBatch(ctx, instance, token, id, windowDays, batch, prompt)
 	if errors.Is(err, upload.ErrPayloadTooLarge) {
 		if len(batch.Artifacts) <= 1 {
-			return nil, fmt.Errorf("a single %s session is too large to upload; the server rejected it (413)", id)
+			return nil, errors.New("a single session is too large to upload; the server rejected it (413)")
 		}
 		mid := len(batch.Artifacts) / 2
 		var out []*upload.Result
@@ -173,9 +187,10 @@ func uploadAdaptive(ctx context.Context, instance string, token *string, id capt
 	return []*upload.Result{res}, nil
 }
 
-// reportResults prints the per-source upload outcome. A large history may upload
-// in several parts (the server caps body size), so each part's report is shown.
-func reportResults(w io.Writer, id capture.SourceID, results []*upload.Result) {
+// reportResults prints the upload outcome, naming the sources captured. A large
+// history may upload in several parts (the server caps body size); each part is
+// a separate run/report, so they're all shown.
+func reportResults(w io.Writer, arts []capture.Artifact, results []*upload.Result) {
 	if len(results) == 0 {
 		return
 	}
@@ -183,16 +198,32 @@ func reportResults(w io.Writer, id capture.SourceID, results []*upload.Result) {
 	for _, r := range results {
 		sessions += r.Sessions
 	}
+	srcs := header(strings.Join(capturedSources(arts), ", "))
 	if len(results) == 1 {
-		fmt.Fprintf(w, "%s %s — %s sessions → %s\n",
-			success("uploaded"), header(string(id)), bold(strconv.Itoa(sessions)), accent(results[0].ReportURL))
+		fmt.Fprintf(w, "%s %s sessions (%s) → %s\n",
+			success("uploaded"), bold(strconv.Itoa(sessions)), srcs, accent(results[0].ReportURL))
 		return
 	}
-	fmt.Fprintf(w, "%s %s — %s sessions in %s parts (server size limit):\n",
-		success("uploaded"), header(string(id)), bold(strconv.Itoa(sessions)), bold(strconv.Itoa(len(results))))
+	fmt.Fprintf(w, "%s %s sessions (%s) in %s parts (server size limit):\n",
+		success("uploaded"), bold(strconv.Itoa(sessions)), srcs, bold(strconv.Itoa(len(results))))
 	for _, r := range results {
 		fmt.Fprintf(w, "  %s %s sessions → %s\n", dim("part:"), strconv.Itoa(r.Sessions), accent(r.ReportURL))
 	}
+}
+
+// capturedSources returns the distinct source ids present in arts, sorted, as
+// display strings.
+func capturedSources(arts []capture.Artifact) []string {
+	set := map[capture.SourceID]bool{}
+	for _, a := range arts {
+		set[a.Source] = true
+	}
+	out := make([]string, 0, len(set))
+	for id := range set {
+		out = append(out, string(id))
+	}
+	sort.Strings(out)
+	return out
 }
 
 // uploadBatch uploads one source's artifacts, re-authorizing once if the server

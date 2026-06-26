@@ -37,7 +37,9 @@ No password, API key, or secret is ever embedded.
 
 Pick the client that matches where you use AI:
 
-- **Desktop client** — analyzes **Claude Code** CLI sessions from `~/.claude/projects`.
+- **Desktop client** — analyzes local CLI sessions: **Claude Code** (`~/.claude/projects`) and
+  **Codex** (`~/.codex/sessions`). Whatever is present is captured; a mixed capture uploads as a
+  single scan.
 - **Browser extension** — analyzes **web** AI usage (claude.ai, chatgpt.com).
 
 ### Desktop client (`aiscan`)

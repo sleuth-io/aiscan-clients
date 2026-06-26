@@ -157,6 +157,62 @@ func TestUploadAdaptive_SplitsOn413(t *testing.T) {
 	}
 }
 
+// TestUploadAll_CombinesSourcesIntoOneDump verifies the "one scan" behavior: a
+// mixed Claude + Codex capture is uploaded as a single dump whose tar carries
+// both trees (projects/ and sessions/), so the server produces one run.
+func TestUploadAll_CombinesSourcesIntoOneDump(t *testing.T) {
+	var posts int32
+	var sawProjects, sawSessions bool
+	var gotSource string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&posts, 1)
+		gotSource = r.URL.Query().Get("source")
+		b, _ := io.ReadAll(r.Body)
+		gz, err := gzip.NewReader(bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := tar.NewReader(gz)
+		for {
+			h, e := tr.Next()
+			if e != nil {
+				break
+			}
+			if strings.HasPrefix(h.Name, "projects/") {
+				sawProjects = true
+			}
+			if strings.HasPrefix(h.Name, "sessions/") {
+				sawSessions = true
+			}
+		}
+		w.Write([]byte(`{"run":"r1"}`))
+	}))
+	defer srv.Close()
+
+	arts := []capture.Artifact{
+		{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s1.jsonl", Data: []byte("a\n")},
+		{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s2.jsonl", Data: []byte("b\n")},
+		{Source: capture.SourceCodex, Path: "codex/sessions/2026/06/01/rollout-x.jsonl", Data: []byte("c\n")},
+	}
+	token := "tok"
+	results, err := uploadAll(context.Background(), srv.URL, &token, 30, arts, func(string, string) {})
+	if err != nil {
+		t.Fatalf("uploadAll: %v", err)
+	}
+	if atomic.LoadInt32(&posts) != 1 {
+		t.Errorf("posts = %d, want 1 (one combined dump)", posts)
+	}
+	if !sawProjects || !sawSessions {
+		t.Errorf("tar missing a tree: projects=%v sessions=%v", sawProjects, sawSessions)
+	}
+	if gotSource != string(capture.SourceClaudeCode) { // dominant: 2 claude vs 1 codex
+		t.Errorf("source label = %q, want claude-code (dominant)", gotSource)
+	}
+	if len(results) != 1 || results[0].Sessions != 3 {
+		t.Errorf("results = %#v, want one run of 3 sessions", results)
+	}
+}
+
 // TestUploadAdaptive_LoneSessionTooLarge verifies that when a single session
 // can't be split any further and the server still 413s, the user gets a clear
 // error instead of an opaque 413.
