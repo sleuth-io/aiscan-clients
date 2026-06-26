@@ -8,7 +8,7 @@ and the *why* — the rationale is not obvious from the code alone.
 The client is **thin**: `capture → redact → upload`. Parsing, normalization, analysis,
 and reporting are **all server-side**. The client stays small. **Do not add analysis to the client.**
 
-This doc covers the **capture** step only. Redact and upload exist as stubs today.
+This doc covers **capture** and **redact**. Upload is still a stub today.
 
 ## The seam: one common Artifact type
 
@@ -57,7 +57,7 @@ config language.
 desktop/internal/
   capture/capture.go        Recipe, Artifact, SourceID, Run()   — the seam
   capture/claude/claude.go  Claude Code source                  — per-source logic
-  redact/redact.go          shared, source-agnostic (stub)
+  redact/redact.go          shared, source-agnostic secret stripping
   upload/upload.go          shared, source-agnostic (stub)
   cli/capture.go            `aiscan capture` verb + the recipe list
 ```
@@ -91,6 +91,34 @@ cutoff. Non-`.jsonl` files are ignored. Raw bytes only — no parsing.
 
 Nothing in `redact` or `upload` changes. (Cursor will be the first source added this way;
 its data is local SQLite, which is why it belongs here and not in the browser extension.)
+
+## Redaction
+
+`redact.Redact([]Artifact)` runs once over every source's bytes before anything is
+shown or written — it is the only gate before the wire, so `aiscan capture` applies it
+by default (`--no-redact` skips it for debugging). It is conservative and targets things
+that match a **reliable pattern**:
+
+- **Secrets:** PEM private keys, `sk-`/GitHub/AWS/Slack/Google key shapes, `Bearer`
+  tokens, and secret-named assignments (`"API_KEY": "..."`, `DB_PASSWORD=...`).
+- **Emails:** all addresses (PII).
+
+Matches are swapped for `[REDACTED]` *inside* JSON string values, so redacted JSONL stays
+well-formed. Rules are intentionally stable (`RulesetVersion`); a churny redactor would
+reintroduce the fat-client problem.
+
+`aiscan capture` prints a one-line redaction summary (the trust surface): how many hits each
+rule made, or `nothing matched`. `--show-redactions` additionally lists every match with the
+artifact (project/session) it came from — note this prints the *matched secret values* to the
+terminal, so it is a debug aid, not for routine use.
+
+**Personal names are deliberately *not* redacted here.** They have no reliable pattern: a
+dictionary of names false-positives on ordinary words (Mark, Rose, Bill, Grace), and NER
+needs an ML model — the antithesis of a thin, stable, offline redactor. Reliable name
+handling belongs server-side (which has the budget for it) or in the user-controlled
+exclusion below. A cheap, deterministic exception worth doing is redacting the *known
+local identity* (git `user.name`/`user.email`, OS user) — that catches the operator's own
+name with zero false positives, without trying to detect arbitrary names.
 
 ## Provenance
 
