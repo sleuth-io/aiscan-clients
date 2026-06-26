@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/sleuth-io/aiscan-clients/desktop/internal/buildinfo"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/cli"
 )
 
@@ -26,7 +25,7 @@ func main() {
 			os.Exit(1)
 		}
 	case "version", "-v", "--version":
-		fmt.Println(buildinfo.String())
+		fmt.Println(cli.VersionString())
 	default:
 		usage()
 		os.Exit(2)

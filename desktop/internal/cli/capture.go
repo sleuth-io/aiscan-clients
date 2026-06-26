@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
@@ -37,7 +38,7 @@ func Capture(args []string) error {
 
 	arts, errs := capture.Run(context.Background(), recipes, opts)
 	for _, e := range errs {
-		fmt.Fprintf(os.Stderr, "warning: %v\n", e)
+		fmt.Fprintf(os.Stderr, "%s %v\n", warn("warning:"), e)
 	}
 
 	// Per-source summary.
@@ -53,15 +54,15 @@ func Capture(args []string) error {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		fmt.Printf("%-14s %d artifacts\n", id, counts[capture.SourceID(id)])
+		fmt.Printf("%-14s %s artifacts\n", header(id), bold(strconv.Itoa(counts[capture.SourceID(id)])))
 	}
-	fmt.Printf("total: %d artifacts, %d bytes\n", len(arts), bytes)
+	fmt.Printf("%s %s artifacts, %s bytes\n", dim("total:"), bold(strconv.Itoa(len(arts))), bold(strconv.Itoa(bytes)))
 
 	if *out != "" {
 		if err := writeArtifacts(*out, arts); err != nil {
 			return err
 		}
-		fmt.Printf("wrote %d artifacts to %s\n", len(arts), *out)
+		fmt.Printf("%s %d artifacts to %s\n", success("wrote"), len(arts), *out)
 	}
 	return nil
 }
