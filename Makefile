@@ -26,13 +26,23 @@ help: ## List targets
 
 .PHONY: build
 build: ## Build the desktop binary into desktop/bin (pure Go)
-	cd $(DESKTOP) && CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(BINARY) ./cmd/aiscan
+	@echo "Building $(BINARY)..."
+	@cd $(DESKTOP) && CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(BINARY) ./cmd/aiscan
+	@echo "Built: $(DESKTOP)/bin/$(BINARY)"
 
 .PHONY: install
 install: build ## Build and copy the desktop binary to $(PREFIX)/bin
+	@echo "Installing $(BINARY)..."
 	@mkdir -p $(PREFIX)/bin
-	cp $(DESKTOP)/bin/$(BINARY) $(PREFIX)/bin/$(BINARY)
-	@echo "installed $(BINARY) to $(PREFIX)/bin"
+	@rm -f $(PREFIX)/bin/$(BINARY) && cp $(DESKTOP)/bin/$(BINARY) $(PREFIX)/bin/
+	@printf "\033[32m✓\033[0m $(BINARY) installed to $(PREFIX)/bin/$(BINARY)\n"
+	@case ":$$PATH:" in \
+		*":$(PREFIX)/bin:"*) ;; \
+		*) echo ""; \
+		   echo "⚠ Warning: $(PREFIX)/bin is not in your PATH"; \
+		   echo "Add this to your ~/.bashrc or ~/.zshrc:"; \
+		   echo "  export PATH=\"\$$PATH:$(PREFIX)/bin\"" ;; \
+	esac
 
 .PHONY: run
 run: ## Run the desktop binary (ARGS="capture --window-days 7")
