@@ -132,15 +132,15 @@ func TestSplitForUpload_KeepsBatchesUnderLimit(t *testing.T) {
 	}
 	total := 0
 	for _, b := range batches {
-		body, err := buildTarGz(b)
-		if err != nil {
-			t.Fatal(err)
+		// The Body is the measured wire body; multi-artifact batches must fit
+		// (a lone artifact may legitimately exceed the ceiling).
+		if len(b.Artifacts) > 1 && len(b.Body) > max {
+			t.Errorf("batch of %d compresses to %d > %d", len(b.Artifacts), len(b.Body), max)
 		}
-		// Multi-artifact batches must fit; a lone artifact may legitimately exceed.
-		if len(b) > 1 && len(body) > max {
-			t.Errorf("batch of %d compresses to %d > %d", len(b), len(body), max)
+		if len(b.Body) == 0 {
+			t.Error("batch carries no prebuilt body")
 		}
-		total += len(b)
+		total += len(b.Artifacts)
 	}
 	if total != len(in) {
 		t.Errorf("batches cover %d artifacts, want %d", total, len(in))
@@ -153,8 +153,8 @@ func TestSplitForUpload_LoneOversizedArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SplitForUpload: %v", err)
 	}
-	if len(batches) != 1 || len(batches[0]) != 1 {
-		t.Fatalf("a lone oversized artifact should be returned alone, got %#v", batches)
+	if len(batches) != 1 || len(batches[0].Artifacts) != 1 {
+		t.Fatalf("a lone oversized artifact should be returned alone, got %d batch(es)", len(batches))
 	}
 }
 

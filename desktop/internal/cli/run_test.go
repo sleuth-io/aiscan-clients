@@ -10,11 +10,27 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
+	"github.com/sleuth-io/aiscan-clients/desktop/internal/upload"
 )
+
+// oneBatch packs arts into a single upload.Batch (failing the test if they don't
+// fit in one), so tests can drive uploadBatch/uploadAdaptive with a real body.
+func oneBatch(t *testing.T, arts []capture.Artifact) upload.Batch {
+	t.Helper()
+	batches, err := upload.SplitForUpload(arts, upload.MaxCompressedBytes)
+	if err != nil {
+		t.Fatalf("SplitForUpload: %v", err)
+	}
+	if len(batches) != 1 {
+		t.Fatalf("expected 1 batch, got %d", len(batches))
+	}
+	return batches[0]
+}
 
 // TestUploadBatch_ReauthorizesOn401 exercises the security-relevant retry path:
 // a stale token gets a 401, which clears the cache, re-runs the device-code flow,
@@ -59,7 +75,7 @@ func TestUploadBatch_ReauthorizesOn401(t *testing.T) {
 	prompt := func(userCode, verifyURL string) { prompted = true } // no-op: don't open a browser
 
 	arts := []capture.Artifact{{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s.jsonl", Data: []byte("x\n")}}
-	res, err := uploadBatch(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, arts, prompt)
+	res, err := uploadBatch(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, oneBatch(t, arts), prompt)
 	if err != nil {
 		t.Fatalf("uploadBatch: %v", err)
 	}
@@ -118,7 +134,7 @@ func TestUploadAdaptive_SplitsOn413(t *testing.T) {
 	}
 
 	token := "tok"
-	results, err := uploadAdaptive(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, arts, func(string, string) {})
+	results, err := uploadAdaptive(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, oneBatch(t, arts), func(string, string) {})
 	if err != nil {
 		t.Fatalf("uploadAdaptive: %v", err)
 	}
@@ -138,5 +154,22 @@ func TestUploadAdaptive_SplitsOn413(t *testing.T) {
 		if r.Sessions > 2 {
 			t.Errorf("a part carried %d sessions, server cap is 2", r.Sessions)
 		}
+	}
+}
+
+// TestUploadAdaptive_LoneSessionTooLarge verifies that when a single session
+// can't be split any further and the server still 413s, the user gets a clear
+// error instead of an opaque 413.
+func TestUploadAdaptive_LoneSessionTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge) // reject everything
+	}))
+	defer srv.Close()
+
+	arts := []capture.Artifact{{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s.jsonl", Data: []byte("x\n")}}
+	token := "tok"
+	_, err := uploadAdaptive(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, oneBatch(t, arts), func(string, string) {})
+	if err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("want a clear 'too large' error, got %v", err)
 	}
 }

@@ -75,12 +75,21 @@ func Upload(ctx context.Context, p Params) (*Result, error) {
 	if len(p.Artifacts) == 0 {
 		return nil, errors.New("upload: nothing to upload (no artifacts)")
 	}
-	instance := strings.TrimRight(p.InstanceURL, "/")
-
 	body, err := buildTarGz(p.Artifacts)
 	if err != nil {
 		return nil, fmt.Errorf("upload: pack: %w", err)
 	}
+	return UploadPacked(ctx, p, body)
+}
+
+// UploadPacked POSTs an already-gzipped body (e.g. the one SplitForUpload built
+// to size the batch), so a caller that packed the artifacts to measure them does
+// not pay to gzip them again. p.Artifacts is used only for the session count.
+func UploadPacked(ctx context.Context, p Params, body []byte) (*Result, error) {
+	if len(p.Artifacts) == 0 {
+		return nil, errors.New("upload: nothing to upload (no artifacts)")
+	}
+	instance := strings.TrimRight(p.InstanceURL, "/")
 
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -126,6 +135,14 @@ func Upload(ctx context.Context, p Params) (*Result, error) {
 	return &Result{ReportURL: reportURL, RunID: parsed.Run, Sessions: len(p.Artifacts)}, nil
 }
 
+// Batch is a group of artifacts and the gzipped tar body that carries them,
+// sized to fit a single ingest POST. SplitForUpload builds Body while measuring,
+// so the eventual UploadPacked reuses it instead of gzipping again.
+type Batch struct {
+	Artifacts []capture.Artifact
+	Body      []byte
+}
+
 // SplitForUpload groups arts into batches whose gzipped tar body each stays at
 // or below maxCompressed bytes, so every batch fits in one ingest POST. It
 // measures the actual compressed size (rather than guessing a ratio) and halves
@@ -133,7 +150,7 @@ func Upload(ctx context.Context, p Params) (*Result, error) {
 // uploads, hence the fewest separate reports. A single artifact whose own
 // compressed body still exceeds the limit is returned alone; the caller decides
 // what to do if the server then rejects it.
-func SplitForUpload(arts []capture.Artifact, maxCompressed int) ([][]capture.Artifact, error) {
+func SplitForUpload(arts []capture.Artifact, maxCompressed int) ([]Batch, error) {
 	if len(arts) == 0 {
 		return nil, nil
 	}
@@ -142,7 +159,7 @@ func SplitForUpload(arts []capture.Artifact, maxCompressed int) ([][]capture.Art
 		return nil, err
 	}
 	if len(body) <= maxCompressed || len(arts) == 1 {
-		return [][]capture.Artifact{arts}, nil
+		return []Batch{{Artifacts: arts, Body: body}}, nil
 	}
 	mid := len(arts) / 2
 	left, err := SplitForUpload(arts[:mid], maxCompressed)

@@ -142,24 +142,30 @@ func uploadSource(ctx context.Context, instance string, token *string, id captur
 
 // uploadAdaptive uploads one batch, and if the server still rejects it as too
 // large (413 — e.g. a proxy caps the body below our estimate), halves the batch
-// and retries each half. A lone session that's still too big is a clear error
-// rather than an opaque 413.
-func uploadAdaptive(ctx context.Context, instance string, token *string, id capture.SourceID, windowDays int, batch []capture.Artifact, prompt auth.Prompt) ([]*upload.Result, error) {
+// and retries each half (re-packing the halves). A lone session that's still too
+// big is a clear error rather than an opaque 413.
+func uploadAdaptive(ctx context.Context, instance string, token *string, id capture.SourceID, windowDays int, batch upload.Batch, prompt auth.Prompt) ([]*upload.Result, error) {
 	res, err := uploadBatch(ctx, instance, token, id, windowDays, batch, prompt)
 	if errors.Is(err, upload.ErrPayloadTooLarge) {
-		if len(batch) <= 1 {
+		if len(batch.Artifacts) <= 1 {
 			return nil, fmt.Errorf("a single %s session is too large to upload; the server rejected it (413)", id)
 		}
-		mid := len(batch) / 2
-		left, err := uploadAdaptive(ctx, instance, token, id, windowDays, batch[:mid], prompt)
-		if err != nil {
-			return nil, err
+		mid := len(batch.Artifacts) / 2
+		var out []*upload.Result
+		for _, half := range [][]capture.Artifact{batch.Artifacts[:mid], batch.Artifacts[mid:]} {
+			subBatches, err := upload.SplitForUpload(half, upload.MaxCompressedBytes)
+			if err != nil {
+				return nil, err
+			}
+			for _, sub := range subBatches {
+				rs, err := uploadAdaptive(ctx, instance, token, id, windowDays, sub, prompt)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, rs...)
+			}
 		}
-		right, err := uploadAdaptive(ctx, instance, token, id, windowDays, batch[mid:], prompt)
-		if err != nil {
-			return nil, err
-		}
-		return append(left, right...), nil
+		return out, nil
 	}
 	if err != nil {
 		return nil, err
@@ -170,6 +176,9 @@ func uploadAdaptive(ctx context.Context, instance string, token *string, id capt
 // reportResults prints the per-source upload outcome. A large history may upload
 // in several parts (the server caps body size), so each part's report is shown.
 func reportResults(w io.Writer, id capture.SourceID, results []*upload.Result) {
+	if len(results) == 0 {
+		return
+	}
 	sessions := 0
 	for _, r := range results {
 		sessions += r.Sessions
@@ -189,9 +198,9 @@ func reportResults(w io.Writer, id capture.SourceID, results []*upload.Result) {
 // uploadBatch uploads one source's artifacts, re-authorizing once if the server
 // rejects the token (mirrors the extension's 401 → clear → re-auth). On a
 // refresh it updates *token so later batches reuse the fresh one.
-func uploadBatch(ctx context.Context, instance string, token *string, id capture.SourceID, windowDays int, arts []capture.Artifact, prompt auth.Prompt) (*upload.Result, error) {
-	p := upload.Params{InstanceURL: instance, Token: *token, Source: id, WindowDays: windowDays, Artifacts: arts}
-	res, err := upload.Upload(ctx, p)
+func uploadBatch(ctx context.Context, instance string, token *string, id capture.SourceID, windowDays int, batch upload.Batch, prompt auth.Prompt) (*upload.Result, error) {
+	p := upload.Params{InstanceURL: instance, Token: *token, Source: id, WindowDays: windowDays, Artifacts: batch.Artifacts}
+	res, err := upload.UploadPacked(ctx, p, batch.Body)
 	if errors.Is(err, upload.ErrUnauthorized) {
 		_ = auth.ClearToken(instance)
 		fresh, aerr := auth.EnsureToken(ctx, instance, prompt)
@@ -200,7 +209,7 @@ func uploadBatch(ctx context.Context, instance string, token *string, id capture
 		}
 		*token = fresh
 		p.Token = fresh
-		res, err = upload.Upload(ctx, p)
+		res, err = upload.UploadPacked(ctx, p, batch.Body)
 	}
 	if err != nil {
 		return nil, err
