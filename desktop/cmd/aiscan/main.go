@@ -15,7 +15,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		usage()
+		fmt.Fprintln(os.Stderr, cli.Help())
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -26,14 +26,10 @@ func main() {
 		}
 	case "version", "-v", "--version":
 		fmt.Println(cli.VersionString())
+	case "help", "-h", "--help":
+		fmt.Println(cli.Help())
 	default:
-		usage()
+		fmt.Fprintln(os.Stderr, cli.Help())
 		os.Exit(2)
 	}
-}
-
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: aiscan <command>")
-	fmt.Fprintln(os.Stderr, "  capture [--out DIR] [--window-days N]   collect local AI usage")
-	fmt.Fprintln(os.Stderr, "  version | -v | --version                print version")
 }

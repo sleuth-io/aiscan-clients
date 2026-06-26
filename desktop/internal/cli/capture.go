@@ -3,6 +3,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -27,7 +28,22 @@ func Capture(args []string) error {
 	fs := flag.NewFlagSet("capture", flag.ContinueOnError)
 	out := fs.String("out", "", "directory to write collected artifacts to (omit to only summarize)")
 	windowDays := fs.Int("window-days", 0, "only collect files modified within the last N days (0 = no limit)")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Collect local AI-tool usage and optionally write a raw dump for")
+		fmt.Fprintln(os.Stderr, "inspection. Read-only; does not redact or upload (separate steps).")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, header("Usage:"))
+		fmt.Fprintln(os.Stderr, "  "+accent("aiscan capture [flags]"))
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, header("Flags:"))
+		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--out DIR", 17)), "write collected artifacts to DIR (omit to only summarize)")
+		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--window-days N", 17)), "only collect files modified within the last N days (0 = no limit)")
+	}
 	if err := fs.Parse(args); err != nil {
+		// -h / --help is not an error: flag already printed usage.
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 
