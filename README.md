@@ -9,12 +9,12 @@ See [`docs/transparency.md`](docs/transparency.md).
 
 ## What's here
 
-| Path | What it is |
-|---|---|
-| [`desktop/`](desktop/) | Desktop client — a Go CLI + background agent with a system-tray UI. Self-updates. |
-| [`extension/`](extension/) | Browser extension — captures web AI usage (ChatGPT, Claude.ai, Gemini). One codebase, Chrome + Firefox. |
-| [`protocol/`](protocol/) | The client↔server contract (upload request/response shapes) shared by both clients. |
-| [`docs/`](docs/) | Public transparency docs: what is captured, redacted, uploaded, and stored. |
+| Path                       | What it is                                                                                              |
+|----------------------------|---------------------------------------------------------------------------------------------------------|
+| [`desktop/`](desktop/)     | Desktop client — a Go CLI + background agent with a system-tray UI. Self-updates.                       |
+| [`extension/`](extension/) | Browser extension — captures web AI usage (ChatGPT, Claude.ai; Gemini planned). One codebase, Chrome + Firefox. |
+| [`protocol/`](protocol/)   | The client↔server contract (upload request/response shapes) shared by both clients.                     |
+| [`docs/`](docs/)           | Public transparency docs: what is captured, redacted, uploaded, and stored.                             |
 
 ## Principles
 
@@ -26,6 +26,23 @@ See [`docs/transparency.md`](docs/transparency.md).
   output. The client surfaces what was sent.
 - **Legible.** The desktop tray (and the extension popup) always show status and what was last
   uploaded.
+
+## Developing
+
+Requires Go 1.23+ and Node (for the extension tests). Everything runs through the
+single root Makefile (`make help` lists all targets):
+
+    make test            # run all tests (Go + JS)
+    make lint            # go vet
+    make prepush         # format check + lint + all tests
+    make install         # build + install the `aiscan` binary to ~/.local/bin
+    make run ARGS="capture --window-days 7"   # run capture without installing
+
+After `make install`, run the client directly:
+
+    aiscan capture --window-days 7 --out /tmp/dump
+
+See [`desktop/`](desktop/) and [`extension/`](extension/) for client-specific docs.
 
 ## Status
 
