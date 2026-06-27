@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -75,7 +76,7 @@ func TestUploadBatch_ReauthorizesOn401(t *testing.T) {
 	prompt := func(userCode, verifyURL string) { prompted = true } // no-op: don't open a browser
 
 	arts := []capture.Artifact{{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s.jsonl", Data: []byte("x\n")}}
-	res, err := uploadBatch(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, oneBatch(t, arts), prompt)
+	res, err := uploadBatch(context.Background(), srv.URL, &token, 0, oneBatch(t, arts), prompt)
 	if err != nil {
 		t.Fatalf("uploadBatch: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestUploadAdaptive_SplitsOn413(t *testing.T) {
 	}
 
 	token := "tok"
-	results, err := uploadAdaptive(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, oneBatch(t, arts), func(string, string) {})
+	results, err := uploadAdaptive(context.Background(), srv.URL, &token, 0, oneBatch(t, arts), func(string, string) {})
 	if err != nil {
 		t.Fatalf("uploadAdaptive: %v", err)
 	}
@@ -157,6 +158,142 @@ func TestUploadAdaptive_SplitsOn413(t *testing.T) {
 	}
 }
 
+// TestUploadAll_CombinesSourcesIntoOneDump verifies the "one scan" behavior: a
+// mixed Claude + Codex capture is uploaded as a single dump whose tar carries
+// both trees (projects/ and sessions/), so the server produces one run.
+func TestUploadAll_CombinesSourcesIntoOneDump(t *testing.T) {
+	var posts int32
+	var sawProjects, sawSessions bool
+	var gotSource string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&posts, 1)
+		gotSource = r.URL.Query().Get("source")
+		b, _ := io.ReadAll(r.Body)
+		gz, err := gzip.NewReader(bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := tar.NewReader(gz)
+		for {
+			h, e := tr.Next()
+			if e != nil {
+				break
+			}
+			if strings.HasPrefix(h.Name, "projects/") {
+				sawProjects = true
+			}
+			if strings.HasPrefix(h.Name, "sessions/") {
+				sawSessions = true
+			}
+		}
+		w.Write([]byte(`{"run":"r1"}`))
+	}))
+	defer srv.Close()
+
+	arts := []capture.Artifact{
+		{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s1.jsonl", Data: []byte("a\n")},
+		{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s2.jsonl", Data: []byte("b\n")},
+		{Source: capture.SourceCodex, Path: "codex/sessions/2026/06/01/rollout-x.jsonl", Data: []byte("c\n")},
+	}
+	token := "tok"
+	results, err := uploadAll(context.Background(), srv.URL, &token, 30, arts, func(string, string) {})
+	if err != nil {
+		t.Fatalf("uploadAll: %v", err)
+	}
+	if atomic.LoadInt32(&posts) != 1 {
+		t.Errorf("posts = %d, want 1 (one combined dump)", posts)
+	}
+	if !sawProjects || !sawSessions {
+		t.Errorf("tar missing a tree: projects=%v sessions=%v", sawProjects, sawSessions)
+	}
+	if gotSource != string(capture.SourceClaudeCode) { // dominant: 2 claude vs 1 codex
+		t.Errorf("source label = %q, want claude-code (dominant)", gotSource)
+	}
+	if len(results) != 1 || results[0].Sessions != 3 {
+		t.Errorf("results = %#v, want one run of 3 sessions", results)
+	}
+}
+
+// TestUploadAll_SplitPartLabeledByOwnContent verifies that when a mixed capture
+// is size-split, each resulting part's ?source= matches that part's own content
+// (not one dominant label computed over the whole capture).
+func TestUploadAll_SplitPartLabeledByOwnContent(t *testing.T) {
+	type part struct {
+		source                   string
+		hasProjects, hasSessions bool
+	}
+	var mu sync.Mutex
+	var accepted []part
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gz, err := gzip.NewReader(bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		tr := tar.NewReader(gz)
+		p := part{source: r.URL.Query().Get("source")}
+		members := 0
+		for {
+			h, e := tr.Next()
+			if e != nil {
+				break
+			}
+			members++
+			if strings.HasPrefix(h.Name, "projects/") {
+				p.hasProjects = true
+			}
+			if strings.HasPrefix(h.Name, "sessions/") {
+				p.hasSessions = true
+			}
+		}
+		if members > 2 { // force the 4-artifact mixed capture to split
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		mu.Lock()
+		accepted = append(accepted, p)
+		mu.Unlock()
+		w.Write([]byte(`{"run":"r"}`))
+	}))
+	defer srv.Close()
+
+	// Recipe order is claude then codex, so an index split yields a claude-only
+	// half and a codex-only half.
+	arts := []capture.Artifact{
+		{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s1.jsonl", Data: []byte("a\n")},
+		{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s2.jsonl", Data: []byte("b\n")},
+		{Source: capture.SourceCodex, Path: "codex/sessions/2026/06/01/r1.jsonl", Data: []byte("c\n")},
+		{Source: capture.SourceCodex, Path: "codex/sessions/2026/06/01/r2.jsonl", Data: []byte("d\n")},
+	}
+	token := "tok"
+	results, err := uploadAll(context.Background(), srv.URL, &token, 0, arts, func(string, string) {})
+	if err != nil {
+		t.Fatalf("uploadAll: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d parts, want 2", len(results))
+	}
+
+	var sawClaude, sawCodex bool
+	for _, p := range accepted {
+		switch {
+		case p.hasProjects && !p.hasSessions:
+			sawClaude = true
+			if p.source != string(capture.SourceClaudeCode) {
+				t.Errorf("claude-only part labeled %q, want claude-code", p.source)
+			}
+		case p.hasSessions && !p.hasProjects:
+			sawCodex = true
+			if p.source != string(capture.SourceCodex) {
+				t.Errorf("codex-only part labeled %q, want codex", p.source)
+			}
+		}
+	}
+	if !sawClaude || !sawCodex {
+		t.Errorf("expected separate claude-only and codex-only parts, got %+v", accepted)
+	}
+}
+
 // TestUploadAdaptive_LoneSessionTooLarge verifies that when a single session
 // can't be split any further and the server still 413s, the user gets a clear
 // error instead of an opaque 413.
@@ -168,7 +305,7 @@ func TestUploadAdaptive_LoneSessionTooLarge(t *testing.T) {
 
 	arts := []capture.Artifact{{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s.jsonl", Data: []byte("x\n")}}
 	token := "tok"
-	_, err := uploadAdaptive(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, oneBatch(t, arts), func(string, string) {})
+	_, err := uploadAdaptive(context.Background(), srv.URL, &token, 0, oneBatch(t, arts), func(string, string) {})
 	if err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("want a clear 'too large' error, got %v", err)
 	}
