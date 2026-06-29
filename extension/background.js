@@ -1,16 +1,17 @@
-// Background worker — turns the captured claude.ai conversations into the
-// Claude Code wire format the Pulse aiscan server expects and uploads them
-// straight to the configured instance.
+// Background worker — packs the captured conversations and uploads them to the
+// configured Pulse aiscan instance.
 //
-// The capture itself runs in the content script (content.js) on the claude.ai
-// page, where fetch carries first-party cookies. This worker does everything
-// that must NOT run on the claude.ai origin:
-//   1. transcode each conversation to Claude Code JSONL (one event per line),
-//   2. pack the sessions into a gzipped tar under projects/claude-ai/,
-//   3. obtain an OAuth access token via the device-code flow (cached),
-//   4. POST the gzip to {instance}/api/aiscan/ingest.
+// The capture itself runs in the content script (content.js) on the AI site's
+// page, where fetch carries first-party credentials. This worker does the parts
+// that must NOT run on the site's origin:
+//   1. pack each provider's raw capture into a gzipped tar (one file per
+//      conversation, under that provider's dir),
+//   2. obtain an OAuth access token via the device-code flow (cached),
+//   3. POST the gzip to {instance}/api/aiscan/ingest.
 //
-// There is no local daemon anymore: the extension is the real client.
+// Parsing is the SERVER's job: every provider uploads its raw API capture and a
+// dedicated server-side parser turns it into the normalized session model. The
+// client stays thin — no transcoding here. There is no local daemon anymore.
 
 const DEFAULT_INSTANCE = "https://app.skills.new";
 const AISCAN_CLIENT_ID = "sleuth-aiscan"; // well-known public client on the server
@@ -28,191 +29,8 @@ async function getInstanceUrl() {
 }
 
 // ---------------------------------------------------------------------------
-// claude.ai -> Claude Code JSONL transcode (ported from the Go daemon's
-// transcodeConversation). The server has a Claude Code parser only, so web
-// conversations are mapped onto Claude Code event lines: user turns carry the
-// prompt text; assistant turns carry text/thinking/tool_use blocks so the
-// detector counts tool and MCP usage just like a real Claude Code session.
-// ---------------------------------------------------------------------------
-
-function firstNonEmpty(...vals) {
-  for (const v of vals) if (v) return v;
-  return "";
-}
-
-function transcodeClaudeConversation(conv, capturedAt) {
-  const sessionId = conv.uuid;
-  if (!sessionId) return "";
-  const model = conv.model || "claude-web";
-  const fallbackTs = firstNonEmpty(
-    conv.created_at,
-    conv.updated_at,
-    capturedAt,
-  );
-
-  const lines = [];
-  const messages = Array.isArray(conv.chat_messages) ? conv.chat_messages : [];
-  messages.forEach((m, i) => {
-    const ts = firstNonEmpty(m.created_at, fallbackTs);
-    const entry = { timestamp: ts, sessionId, cwd: "claude.ai" };
-    const blocks = Array.isArray(m.content) ? m.content : [];
-
-    if (m.sender === "human" || m.sender === "user") {
-      let text = m.text || "";
-      if (!text) {
-        text = blocks
-          .filter((c) => c.type === "text" && c.text)
-          .map((c) => c.text)
-          .join("\n");
-      }
-      entry.type = "user";
-      entry.message = { role: "user", content: text };
-    } else {
-      // Assistant turns: map claude.ai blocks onto Claude Code blocks. tool_result
-      // is dropped (tool calls are read off the assistant turn).
-      const out = [];
-      for (const c of blocks) {
-        if (c.type === "text" && c.text)
-          out.push({ type: "text", text: c.text });
-        else if (c.type === "thinking" && c.thinking)
-          out.push({ type: "thinking", text: c.thinking });
-        else if (c.type === "tool_use")
-          out.push({ type: "tool_use", name: c.name, input: c.input });
-      }
-      if (out.length === 0 && m.text) out.push({ type: "text", text: m.text });
-      entry.type = "assistant";
-      entry.message = {
-        id: firstNonEmpty(m.uuid, sessionId + "-" + i),
-        model,
-        role: "assistant",
-        content: out,
-      };
-    }
-    lines.push(JSON.stringify(entry));
-  });
-  return lines.length ? lines.join("\n") + "\n" : "";
-}
-
-// ---------------------------------------------------------------------------
-// chatgpt.com -> Claude Code JSONL transcode. ChatGPT stores a conversation as
-// a TREE: `mapping` is a map of node id -> { message, parent, children } and
-// `current_node` is the leaf of the active branch (edits/regenerations create
-// sibling branches). We linearize the active branch by walking parent pointers
-// from `current_node` to the root, then map each node onto the same Claude Code
-// event lines the claude.ai transcoder emits, so the server's detector counts
-// tool/MCP usage identically.
-// ---------------------------------------------------------------------------
-
-function chatgptActiveBranch(conv) {
-  const mapping = conv.mapping || {};
-  const order = [];
-  const seen = new Set();
-  let nodeId = conv.current_node;
-  while (nodeId && mapping[nodeId] && !seen.has(nodeId)) {
-    seen.add(nodeId);
-    order.push(mapping[nodeId]);
-    nodeId = mapping[nodeId].parent;
-  }
-  order.reverse(); // root -> leaf
-  return order.map((n) => n && n.message).filter(Boolean);
-}
-
-// ChatGPT create_time is float epoch seconds; the JSONL wants an ISO string.
-function epochToIso(sec, fallback) {
-  if (typeof sec !== "number" || !isFinite(sec)) return fallback;
-  return new Date(sec * 1000).toISOString();
-}
-
-function transcodeChatGPTConversation(conv, capturedAt) {
-  const sessionId = conv.conversation_id || conv.id;
-  if (!sessionId) return "";
-  const convModel = conv.default_model_slug || "chatgpt";
-
-  const lines = [];
-  for (const m of chatgptActiveBranch(conv)) {
-    const role = m.author && m.author.role;
-    const meta = m.metadata || {};
-    // Skip the hidden system/scaffolding turns ChatGPT injects (custom
-    // instructions, tool boilerplate) — they're empty and not user content.
-    if (role === "system" || meta.is_visually_hidden_from_conversation)
-      continue;
-
-    const content = m.content || {};
-    const ctype = content.content_type;
-    const parts = Array.isArray(content.parts) ? content.parts : [];
-    const textOf = () =>
-      parts
-        .map((p) => (typeof p === "string" ? p : ""))
-        .filter(Boolean)
-        .join("\n");
-    const ts = epochToIso(m.create_time, capturedAt);
-
-    if (role === "user") {
-      const text = textOf();
-      if (!text) continue;
-      lines.push(
-        JSON.stringify({
-          timestamp: ts,
-          sessionId,
-          cwd: "chatgpt.com",
-          type: "user",
-          message: { role: "user", content: text },
-        }),
-      );
-      continue;
-    }
-
-    if (role === "assistant") {
-      const out = [];
-      if (ctype === "thoughts") {
-        // gpt-5 reasoning summaries: parts are { summary, content } objects.
-        const t = parts
-          .map((p) =>
-            typeof p === "string" ? p : (p && (p.content || p.summary)) || "",
-          )
-          .filter(Boolean)
-          .join("\n");
-        if (t) out.push({ type: "thinking", text: t });
-      } else if (ctype === "code" && m.recipient && m.recipient !== "all") {
-        // A tool call: `recipient` names the tool (e.g. api_tool.call_tool,
-        // web.search, python); `content.text` is the JSON args.
-        let input;
-        try {
-          input = JSON.parse(content.text);
-        } catch (_) {
-          input = { raw: content.text || "" };
-        }
-        out.push({ type: "tool_use", name: m.recipient, input });
-      } else {
-        // Plain answer text (content_type "text"), or a code block addressed to
-        // the user — either way surface it as text.
-        const t = ctype === "code" ? content.text || "" : textOf();
-        if (t) out.push({ type: "text", text: t });
-      }
-      if (!out.length) continue;
-      lines.push(
-        JSON.stringify({
-          timestamp: ts,
-          sessionId,
-          cwd: "chatgpt.com",
-          type: "assistant",
-          message: {
-            id: m.id || sessionId,
-            model: meta.model_slug || convModel,
-            role: "assistant",
-            content: out,
-          },
-        }),
-      );
-    }
-    // role "tool" (tool results) is dropped, mirroring the claude.ai transcoder.
-  }
-  return lines.length ? lines.join("\n") + "\n" : "";
-}
-
-// ---------------------------------------------------------------------------
-// tar + gzip — the upload body is a gzipped tar mirroring ~/.claude/projects,
-// with each session at projects/claude-ai/<uuid>.jsonl. The server only
+// tar + gzip — the upload body is a gzipped tar, one file per conversation
+// under its provider dir (e.g. claude-web/<uuid>.json). The server only
 // extracts regular file members, so no directory entries are needed.
 // ---------------------------------------------------------------------------
 
@@ -396,34 +214,31 @@ async function ensureToken(instanceUrl, tabId) {
 }
 
 // ---------------------------------------------------------------------------
-// Upload: transcode -> tar.gz -> authorize -> POST to /api/aiscan/ingest
+// Upload: pack -> tar.gz -> authorize -> POST to /api/aiscan/ingest
 // ---------------------------------------------------------------------------
 
-// Per-provider packaging: how to serialize each conversation, where to file it,
-// the file extension, the wire "source", and how to read its id. claude.ai /
-// chatgpt.com transcode to Claude Code JSONL; gemini ships its already-unwrapped
-// payload as raw JSON for the server's dedicated parser.
+// Per-provider packaging: where to file each conversation, the wire "source",
+// and how to read its id. Every provider now uploads its RAW capture as JSON;
+// the matching server-side parser turns it into sessions. `pack` returns the
+// file body, or "" to skip a conversation that didn't capture cleanly.
+const rawJson = (c) => (c ? JSON.stringify(c) : "");
 const PROVIDER_CFG = {
   "claude-ai": {
-    transcode: transcodeClaudeConversation,
-    dir: "projects/claude-ai/",
-    ext: ".jsonl",
+    pack: rawJson, // the raw claude.ai conversation object (chat_messages, …)
+    dir: "claude-web/",
     source: "claude-web",
     idOf: (c) => c.uuid,
   },
   chatgpt: {
-    transcode: transcodeChatGPTConversation,
-    dir: "projects/chatgpt/",
-    ext: ".jsonl",
+    pack: rawJson, // the raw chatgpt conversation object (mapping tree, …)
+    dir: "chatgpt/",
     source: "chatgpt-web",
     idOf: (c) => c.conversation_id || c.id,
   },
   gemini: {
-    // Raw capture: skip conversations whose payload failed to load. Filed under
-    // a top-level gemini/ dir (its own server parser), not projects/.
-    transcode: (c) => (c && c.payload ? JSON.stringify(c) : ""),
+    // content.js already unwrapped the RPC transport; skip a failed payload.
+    pack: (c) => (c && c.payload ? JSON.stringify(c) : ""),
     dir: "gemini/",
-    ext: ".json",
     source: "gemini-web",
     idOf: (c) => c.conversation_id,
   },
@@ -436,26 +251,21 @@ async function upload(msg, tabId) {
     ? msg.conversations
     : [];
 
-  // The content script tags each batch with its provider so we pack it the way
-  // that provider's server-side parser expects, file the sessions under a
-  // provider-specific dir, and report the right origin as the session "source"
-  // (the report's "Where it happened" — these are web clients, not the CLI).
-  //
-  // claude.ai / chatgpt.com transcode to Claude Code JSONL (the server reuses
-  // its Claude Code parser). Gemini is captured raw: the content script already
-  // unwrapped the RPC transport, so we just serialize the nested-array payload
-  // to JSON and the server's dedicated gemini-web parser walks it.
+  // The content script tags each batch with its provider; we file each raw
+  // conversation under that provider's dir (one .json per conversation) and
+  // report the matching origin as the session "source" (the report's "Where it
+  // happened"). The server picks the parser by dir.
   const cfg = PROVIDER_CFG[msg.provider] || PROVIDER_CFG["claude-ai"];
 
   const files = [];
   conversations.forEach((conv, i) => {
-    const data = cfg.transcode(conv, capturedAt);
+    const data = cfg.pack(conv);
     if (!data) return;
-    const name = cfg.dir + (cfg.idOf(conv) || "conv-" + i) + cfg.ext;
+    const name = cfg.dir + (cfg.idOf(conv) || "conv-" + i) + ".json";
     files.push({ name, data });
   });
   if (!files.length)
-    throw new Error("nothing to upload (no transcodable conversations)");
+    throw new Error("nothing to upload (no capturable conversations)");
 
   const mtime = Math.floor(Date.parse(capturedAt) / 1000);
   const body = await gzip(buildTar(files, mtime));
@@ -543,13 +353,5 @@ if (typeof chrome !== "undefined" && chrome.runtime) {
 // inert in the MV3 worker (no CommonJS `module` there), so it changes nothing
 // about how the extension loads.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = {
-    transcodeClaudeConversation,
-    transcodeChatGPTConversation,
-    chatgptActiveBranch,
-    epochToIso,
-    buildTar,
-    gzip,
-    upload,
-  };
+  module.exports = { buildTar, gzip, upload, PROVIDER_CFG };
 }
