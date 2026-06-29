@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
 )
@@ -201,5 +202,98 @@ func TestUpload_NoArtifacts(t *testing.T) {
 	_, err := Upload(context.Background(), Params{InstanceURL: "http://x", Token: "t", Source: capture.SourceClaudeCode})
 	if err == nil {
 		t.Fatal("want error for empty artifacts")
+	}
+}
+
+func TestUploadEvidence_PostsSpanAndParsesEvidence(t *testing.T) {
+	start := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 6, 29, 0, 0, 0, 0, time.UTC)
+	var gotPath, gotSource, gotStart, gotEnd, gotSchema, gotCT, gotAuth string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotSource = r.URL.Query().Get("source")
+		gotStart = r.URL.Query().Get("captured_start")
+		gotEnd = r.URL.Query().Get("captured_end")
+		gotSchema = r.URL.Query().Get("schema_version")
+		gotCT = r.Header.Get("content-type")
+		gotAuth = r.Header.Get("authorization")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusAccepted)
+		w.Write([]byte(`{"evidence":"EV-abc"}`))
+	}))
+	defer srv.Close()
+
+	body, _ := buildTarGz(arts())
+	res, err := UploadEvidence(context.Background(), EvidenceParams{
+		InstanceURL:   srv.URL + "/",
+		Token:         "tok",
+		Source:        capture.SourceClaudeCode,
+		CapturedStart: start,
+		CapturedEnd:   end,
+		SchemaVersion: SchemaVersionV1,
+		Sessions:      2,
+	}, body)
+	if err != nil {
+		t.Fatalf("UploadEvidence: %v", err)
+	}
+	if gotPath != "/api/aiscan/evidence" {
+		t.Errorf("path = %q", gotPath)
+	}
+	if gotSource != "claude-code" || gotStart != "2026-06-01T00:00:00Z" || gotEnd != "2026-06-29T00:00:00Z" || gotSchema != "1" {
+		t.Errorf("query source=%q start=%q end=%q schema=%q", gotSource, gotStart, gotEnd, gotSchema)
+	}
+	if gotCT != "application/gzip" || gotAuth != "Bearer tok" {
+		t.Errorf("headers ct=%q auth=%q", gotCT, gotAuth)
+	}
+	if !bytes.Equal(gotBody, body) {
+		t.Errorf("body mismatch: got %d bytes, want %d", len(gotBody), len(body))
+	}
+	if res.EvidenceGID != "EV-abc" || res.Sessions != 2 {
+		t.Errorf("result = %#v", res)
+	}
+}
+
+func TestUploadEvidence_EmptyWindowPostsEmptyBody(t *testing.T) {
+	var gotLen int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotLen = r.ContentLength
+		w.WriteHeader(http.StatusAccepted)
+		w.Write([]byte(`{"evidence":"EV-empty"}`))
+	}))
+	defer srv.Close()
+
+	res, err := UploadEvidence(context.Background(), EvidenceParams{
+		InstanceURL:   srv.URL,
+		Token:         "tok",
+		Source:        capture.SourceClaudeCode,
+		CapturedStart: time.Now().UTC().Add(-time.Hour),
+		CapturedEnd:   time.Now().UTC(),
+		SchemaVersion: SchemaVersionV1,
+		Sessions:      0,
+	}, nil)
+	if err != nil {
+		t.Fatalf("UploadEvidence: %v", err)
+	}
+	if gotLen != 0 {
+		t.Errorf("empty window should send a zero-length body, got %d", gotLen)
+	}
+	if res.EvidenceGID != "EV-empty" || res.Sessions != 0 {
+		t.Errorf("result = %#v", res)
+	}
+}
+
+func TestUploadEvidence_Unauthorized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, err := UploadEvidence(context.Background(), EvidenceParams{
+		InstanceURL: srv.URL, Token: "x", Source: capture.SourceClaudeCode,
+		CapturedStart: time.Now(), CapturedEnd: time.Now(), SchemaVersion: SchemaVersionV1,
+	}, nil)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("want ErrUnauthorized, got %v", err)
 	}
 }
