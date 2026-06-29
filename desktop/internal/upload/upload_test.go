@@ -237,7 +237,7 @@ func TestUploadEvidence_PostsSpanAndParsesEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UploadEvidence: %v", err)
 	}
-	if gotPath != "/api/aiscan/evidence" {
+	if gotPath != "/api/aiscan/ingest" {
 		t.Errorf("path = %q", gotPath)
 	}
 	if gotSource != "claude-code" || gotStart != "2026-06-01T00:00:00Z" || gotEnd != "2026-06-29T00:00:00Z" || gotSchema != "1" {

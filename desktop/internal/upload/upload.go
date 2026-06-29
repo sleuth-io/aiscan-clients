@@ -159,7 +159,7 @@ type EvidenceResult struct {
 }
 
 // UploadEvidence POSTs a gzipped tar body (or an empty body, for a confirmed-
-// empty window) to {instance}/api/aiscan/evidence with the declared span and
+// empty window) to {instance}/api/aiscan/ingest with the declared span and
 // schema version as query params. It models UploadPacked but targets the v1
 // sync contract: the span — not a history-window count — is the metadata, and a
 // zero-length body is valid (it records that the window was scanned and found
@@ -176,7 +176,7 @@ func UploadEvidence(ctx context.Context, p EvidenceParams, body []byte) (*Eviden
 	q.Set("captured_start", p.CapturedStart.UTC().Format(time.RFC3339))
 	q.Set("captured_end", p.CapturedEnd.UTC().Format(time.RFC3339))
 	q.Set("schema_version", strconv.Itoa(p.SchemaVersion))
-	endpoint := instance + "/api/aiscan/evidence?" + q.Encode()
+	endpoint := instance + "/api/aiscan/ingest?" + q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
