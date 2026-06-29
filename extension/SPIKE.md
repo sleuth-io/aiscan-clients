@@ -1,14 +1,20 @@
-# claude.ai + chatgpt.com capture
+# claude.ai + chatgpt.com + Gemini capture
 
-Pull **all** your claude.ai and chatgpt.com conversations and run aiscan's analysis over them —
-the same way the desktop client analyzes Claude Code sessions. The extension now uploads
-**directly to a Pulse aiscan instance** (`/api/aiscan/ingest`); there is no local Go daemon in
-the loop anymore.
+Pull **all** your claude.ai, chatgpt.com, and gemini.google.com conversations and run aiscan's
+analysis over them — the same way the desktop client analyzes Claude Code sessions. The extension
+uploads **directly to a Pulse aiscan instance** (`/api/aiscan/ingest`); there is no local Go
+daemon in the loop anymore.
 
 The capture flow (list conversations → window-filter → fetch each transcript → upload) is shared;
 a **per-site adapter** in `content.js` (keyed by hostname) knows how to list and fetch on each
-origin, and `background.js` transcodes with the matching mapper. Adding a site is one adapter +
-one transcoder.
+origin, and `background.js` packs the batch for that provider's server-side parser. Adding a site
+is one adapter plus one packer.
+
+Two packaging shapes exist today: claude.ai and chatgpt.com **transcode** to Claude Code JSONL
+(the server reuses its Claude Code parser); Gemini is captured **raw** (the content script only
+unwraps the RPC transport) and parsed by a dedicated server-side parser. New surfaces should
+prefer the raw-capture + server-parser shape — it keeps the client thin and the fragile parsing
+testable in Python.
 
 ## Pieces
 
@@ -17,13 +23,13 @@ one transcoder.
   the **provider adapter** for the current hostname, enumerates your conversations, fetches each
   transcript, and hands the batch (tagged with the provider name) to the background worker. It
   does no parsing.
-- **`background.js`** — the real client. It (1) transcodes each conversation to Claude Code JSONL
-  (the server has a Claude Code parser only) using the provider's mapper, (2) packs the sessions
-  into a **gzipped tar** under `projects/{claude-ai,chatgpt}/<id>.jsonl` — the wire format
-  `/api/aiscan/ingest` expects, (3) gets an
-  OAuth access token via the **device-code flow** (well-known client `sleuth-aiscan`, cached in
-  `chrome.storage`), and (4) POSTs the gzip to `{instance}/api/aiscan/ingest`. The server stores
-  it and runs the pipeline on a Celery worker; we get back a run GID and link to its report.
+- **`background.js`** — the real client. It (1) packs each conversation per `PROVIDER_CFG` —
+  claude.ai/chatgpt.com transcode to Claude Code JSONL under `projects/{claude-ai,chatgpt}/<id>.jsonl`,
+  Gemini ships its raw payload under `gemini/<id>.json` — into a **gzipped tar** (the wire format
+  `/api/aiscan/ingest` expects), (2) gets an OAuth access token via the **device-code flow**
+  (well-known client `sleuth-aiscan`, cached in `chrome.storage`), and (3) POSTs the gzip to
+  `{instance}/api/aiscan/ingest?source=<claude-web|chatgpt-web|gemini-web>`. The server stores it
+  and runs the pipeline on a Celery worker; we get back a run GID and link to its report.
 - **Inline settings panel** (in `content.js`) — the on-page **⚙** toggles a floaty popover to set
   the **instance URL** (`http://dev.pulse.sleuth.io` for local dev, `https://app.skills.new` for
   prod), the history window, and to sign out — all without leaving claude.ai.
@@ -90,6 +96,27 @@ node --test        # or: npm test
   (a tool call — `recipient` names the tool, `content.text` is the JSON args → `tool_use`). Hidden
   system turns (`is_visually_hidden_from_conversation`) and `tool`-role results are dropped, just
   like claude.ai's `tool_result`.
+
+## What we learned (gemini.google.com)
+
+- **It's `batchexecute`, not REST.** Gemini's web backend speaks Google's `batchexecute` RPC
+  (POST `/_/BardChatUi/data/batchexecute?rpcids=<id>`), with obfuscated rpc ids and nested-array
+  responses framed by a `)]}'` prefix + length-delimited `wrb.fr` rows. No clean JSON API.
+- **Auth is an XSRF token, not a bearer.** Calls need `at` (`SNlM0e`) plus the build label
+  (`cfb2h`) and session id (`FdrFJe`). The isolated content world can't read
+  `window.WIZ_global_data`, so the adapter regexes them out of the **app HTML** (same-origin fetch
+  with cookies) — no main-world injection, which the Trusted-Types CSP would block anyway.
+- **Two rpcs.** `MaZiqc` lists conversations (`[id, title, …, [epochSec,nanos], …]` per entry —
+  the adapter normalizes the timestamp to ISO for the window filter). It is **token-paged**: the
+  response's `[1]` is a continuation token (null when done), passed back as the request's 2nd arg
+  (`[pageSize, token, [0,null,1]]`); the adapter walks it to completion with id-dedup and a page
+  cap. `hNvQHb` loads one: `payload[0]` is the turns (newest-first); per turn, the
+  user prompt is at `t[2][0][0]`, the assistant markdown at `t[3][0][0][1][0]`, the
+  `[epochSec,nanos]` at `t[4]`.
+- **Captured raw, parsed server-side.** The adapter unwraps only the RPC transport and uploads the
+  inner payload as `gemini/<id>.json` (`source=gemini-web`); the dedicated `gemini_web` parser in
+  Pulse walks the nested arrays. No tool calls or token usage are exposed, so a Gemini session is
+  prompts + assistant turn-markers (tier `medium`).
 
 ## Known spike shortcuts (not the v2 design)
 

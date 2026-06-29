@@ -105,6 +105,116 @@
         return getJSON("/backend-api/conversation/" + item.id, headers);
       },
     },
+    "gemini.google.com": {
+      name: "gemini",
+      label: "Gemini",
+      // Gemini's web backend speaks Google's `batchexecute` RPC (no REST). Calls
+      // need an XSRF token (`at`) plus the build label / session id. The isolated
+      // content world can't read window.WIZ_global_data, so we regex those out of
+      // the app HTML (same-origin fetch, cookies attached). We only unwrap the
+      // generic RPC transport here; the nested-array conversation format itself
+      // is parsed server-side (uploaded as source=gemini-web).
+      async tokens() {
+        if (!this._tokens) {
+          const html = await (
+            await fetch(location.href, { credentials: "include" })
+          ).text();
+          const grab = (re) => {
+            const m = html.match(re);
+            return m ? m[1] : null;
+          };
+          const at = grab(/"SNlM0e":"([^"]+)"/);
+          if (!at) throw new Error("not signed in to gemini.google.com");
+          this._tokens = {
+            at,
+            bl: grab(/"cfb2h":"([^"]+)"/) || "",
+            sid: grab(/"FdrFJe":"([^"]+)"/) || "",
+          };
+        }
+        return this._tokens;
+      },
+      // One batchexecute RPC -> the inner payload for `rpcid` (transport envelope
+      // stripped), or null. `inner` is the RPC-specific argument array.
+      async rpc(rpcid, inner) {
+        const { at, bl, sid } = await this.tokens();
+        const url =
+          "/_/BardChatUi/data/batchexecute?rpcids=" +
+          rpcid +
+          "&source-path=%2Fapp&bl=" +
+          encodeURIComponent(bl) +
+          "&f.sid=" +
+          encodeURIComponent(sid) +
+          "&hl=en&_reqid=" +
+          Math.floor(Math.random() * 1e6) +
+          "&rt=c";
+        const freq = JSON.stringify([
+          [[rpcid, JSON.stringify(inner), null, "generic"]],
+        ]);
+        const r = await fetch(url, {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+          },
+          body: "f.req=" + encodeURIComponent(freq) + "&at=" + encodeURIComponent(at),
+        });
+        if (!r.ok)
+          throw new Error(r.status + " " + r.statusText + " — batchexecute " + rpcid);
+        // Responses are framed as )]}' then length-delimited JSON rows; ours is
+        // the "wrb.fr" row whose second field is our rpcid.
+        for (const line of (await r.text()).split("\n")) {
+          if (!line.startsWith("[[")) continue;
+          try {
+            for (const row of JSON.parse(line))
+              if (row[0] === "wrb.fr" && row[1] === rpcid) return JSON.parse(row[2]);
+          } catch (_) {}
+        }
+        return null;
+      },
+      async listConversations() {
+        // MaZiqc is token-paged: the response's [1] is the continuation token
+        // (null when there are no more), passed back as the request's 2nd arg.
+        // The real terminator is token exhaustion; we also stop if the token
+        // stops advancing (defensive) and cap the page count. id-dedup guards
+        // against any overlap. Each entry is [id, title, …, [epochSec,nanos], …].
+        const PAGE = 50;
+        const convs = [];
+        const seen = new Set();
+        let token = null;
+        for (let page = 0; page < 100; page++) {
+          const resp = await this.rpc("MaZiqc", [PAGE, token, [0, null, 1]]);
+          for (const c of (resp && resp[2]) || []) {
+            if (c && c[0] && !seen.has(c[0])) {
+              seen.add(c[0]);
+              convs.push(c);
+            }
+          }
+          const next = resp && resp[1];
+          if (!next || next === token) break;
+          token = next;
+        }
+        return convs.map((c) => {
+          const ts = Array.isArray(c[5])
+            ? new Date(c[5][0] * 1000).toISOString()
+            : undefined;
+          return { id: c[0], title: c[1] || "", updated_at: ts, created_at: ts };
+        });
+      },
+      async fetchFull(item) {
+        // hNvQHb returns the conversation's turns; upload the raw inner payload
+        // and let the server parser walk the nested-array structure.
+        const payload = await this.rpc(
+          "hNvQHb",
+          [item.id, 50, null, 1, [0], [4], null, 1],
+        );
+        return {
+          conversation_id: item.id,
+          title: item.title,
+          updated_at: item.updated_at,
+          payload,
+        };
+      },
+    },
   };
   const provider = PROVIDERS[location.hostname] || PROVIDERS["claude.ai"];
 
@@ -445,8 +555,8 @@
       const total = list.length;
       log("  found " + total + " conversations");
       if (!total) return;
-      // Keep only conversations active within the window (by last update). Both
-      // providers report ISO timestamps here (normalized in their adapters).
+      // Keep only conversations active within the window (by last update). Every
+      // adapter normalizes its list timestamps to ISO strings here.
       if (cfg.windowDays > 0) {
         const cutoff = Date.now() - cfg.windowDays * 24 * 60 * 60 * 1000;
         list = list.filter((c) => {
