@@ -107,8 +107,10 @@ node --test        # or: npm test
   `window.WIZ_global_data`, so the adapter regexes them out of the **app HTML** (same-origin fetch
   with cookies) — no main-world injection, which the Trusted-Types CSP would block anyway.
 - **Two rpcs.** `MaZiqc` lists conversations (`[id, title, …, [epochSec,nanos], …]` per entry —
-  the adapter normalizes the timestamp to ISO for the window filter; only the first page is
-  fetched today). `hNvQHb` loads one: `payload[0]` is the turns (newest-first); per turn, the
+  the adapter normalizes the timestamp to ISO for the window filter). It is **token-paged**: the
+  response's `[1]` is a continuation token (null when done), passed back as the request's 2nd arg
+  (`[pageSize, token, [0,null,1]]`); the adapter walks it to completion with id-dedup and a page
+  cap. `hNvQHb` loads one: `payload[0]` is the turns (newest-first); per turn, the
   user prompt is at `t[2][0][0]`, the assistant markdown at `t[3][0][0][1][0]`, the
   `[epochSec,nanos]` at `t[4]`.
 - **Captured raw, parsed server-side.** The adapter unwraps only the RPC transport and uploads the
