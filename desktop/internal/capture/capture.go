@@ -20,6 +20,9 @@ type SourceID string
 
 const (
 	SourceClaudeCode SourceID = "claude-code"
+	// SourceClaudeCowork is Claude Cowork (the desktop app's agentic mode), which
+	// keeps its working sessions on local disk.
+	SourceClaudeCowork SourceID = "claude-cowork"
 	// SourceCursor, SourceCopilot, ... land here as they are implemented.
 )
 
