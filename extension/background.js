@@ -399,6 +399,36 @@ async function ensureToken(instanceUrl, tabId) {
 // Upload: transcode -> tar.gz -> authorize -> POST to /api/aiscan/ingest
 // ---------------------------------------------------------------------------
 
+// Per-provider packaging: how to serialize each conversation, where to file it,
+// the file extension, the wire "source", and how to read its id. claude.ai /
+// chatgpt.com transcode to Claude Code JSONL; gemini ships its already-unwrapped
+// payload as raw JSON for the server's dedicated parser.
+const PROVIDER_CFG = {
+  "claude-ai": {
+    transcode: transcodeClaudeConversation,
+    dir: "projects/claude-ai/",
+    ext: ".jsonl",
+    source: "claude-web",
+    idOf: (c) => c.uuid,
+  },
+  chatgpt: {
+    transcode: transcodeChatGPTConversation,
+    dir: "projects/chatgpt/",
+    ext: ".jsonl",
+    source: "chatgpt-web",
+    idOf: (c) => c.conversation_id || c.id,
+  },
+  gemini: {
+    // Raw capture: skip conversations whose payload failed to load. Filed under
+    // a top-level gemini/ dir (its own server parser), not projects/.
+    transcode: (c) => (c && c.payload ? JSON.stringify(c) : ""),
+    dir: "gemini/",
+    ext: ".json",
+    source: "gemini-web",
+    idOf: (c) => c.conversation_id,
+  },
+};
+
 async function upload(msg, tabId) {
   const instanceUrl = await getInstanceUrl();
   const capturedAt = new Date().toISOString();
@@ -406,26 +436,23 @@ async function upload(msg, tabId) {
     ? msg.conversations
     : [];
 
-  // The content script tags each batch with its provider so we transcode with
-  // the matching mapper, file the sessions under a provider-specific dir, and
-  // report the right origin to the server (which records it as the session
-  // "source" for the report's "Where it happened" — these are web sessions, not
-  // the Claude Code CLI).
-  const isChatGPT = msg.provider === "chatgpt";
-  const transcode = isChatGPT
-    ? transcodeChatGPTConversation
-    : transcodeClaudeConversation;
-  const dir = isChatGPT ? "projects/chatgpt/" : "projects/claude-ai/";
-  const source = isChatGPT ? "chatgpt-web" : "claude-web";
-  const idOf = (conv) =>
-    isChatGPT ? conv.conversation_id || conv.id : conv.uuid;
+  // The content script tags each batch with its provider so we pack it the way
+  // that provider's server-side parser expects, file the sessions under a
+  // provider-specific dir, and report the right origin as the session "source"
+  // (the report's "Where it happened" — these are web clients, not the CLI).
+  //
+  // claude.ai / chatgpt.com transcode to Claude Code JSONL (the server reuses
+  // its Claude Code parser). Gemini is captured raw: the content script already
+  // unwrapped the RPC transport, so we just serialize the nested-array payload
+  // to JSON and the server's dedicated gemini-web parser walks it.
+  const cfg = PROVIDER_CFG[msg.provider] || PROVIDER_CFG["claude-ai"];
 
   const files = [];
   conversations.forEach((conv, i) => {
-    const jsonl = transcode(conv, capturedAt);
-    if (!jsonl) return;
-    const name = dir + (idOf(conv) || "conv-" + i) + ".jsonl";
-    files.push({ name, data: jsonl });
+    const data = cfg.transcode(conv, capturedAt);
+    if (!data) return;
+    const name = cfg.dir + (cfg.idOf(conv) || "conv-" + i) + cfg.ext;
+    files.push({ name, data });
   });
   if (!files.length)
     throw new Error("nothing to upload (no transcodable conversations)");
@@ -438,7 +465,7 @@ async function upload(msg, tabId) {
   const url =
     instanceUrl +
     "/api/aiscan/ingest?source=" +
-    encodeURIComponent(source) +
+    encodeURIComponent(cfg.source) +
     "&window_days=" +
     windowDays;
   const res = await fetch(url, {
@@ -477,7 +504,11 @@ if (typeof chrome !== "undefined" && chrome.runtime) {
   // icon just focuses an existing claude.ai/chatgpt.com tab, or opens one.
   chrome.action.onClicked.addListener(async () => {
     const tabs = await chrome.tabs.query({
-      url: ["https://claude.ai/*", "https://chatgpt.com/*"],
+      url: [
+        "https://claude.ai/*",
+        "https://chatgpt.com/*",
+        "https://gemini.google.com/*",
+      ],
     });
     // Some matched tabs (e.g. devtools) can lack a usable id; fall through to
     // opening a fresh tab rather than throwing on an undefined id.

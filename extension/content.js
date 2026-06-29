@@ -105,6 +105,98 @@
         return getJSON("/backend-api/conversation/" + item.id, headers);
       },
     },
+    "gemini.google.com": {
+      name: "gemini",
+      label: "Gemini",
+      // Gemini's web backend speaks Google's `batchexecute` RPC (no REST). Calls
+      // need an XSRF token (`at`) plus the build label / session id. The isolated
+      // content world can't read window.WIZ_global_data, so we regex those out of
+      // the app HTML (same-origin fetch, cookies attached). We only unwrap the
+      // generic RPC transport here; the nested-array conversation format itself
+      // is parsed server-side (uploaded as source=gemini-web).
+      async tokens() {
+        if (!this._tokens) {
+          const html = await (
+            await fetch(location.href, { credentials: "include" })
+          ).text();
+          const grab = (re) => {
+            const m = html.match(re);
+            return m ? m[1] : null;
+          };
+          const at = grab(/"SNlM0e":"([^"]+)"/);
+          if (!at) throw new Error("not signed in to gemini.google.com");
+          this._tokens = {
+            at,
+            bl: grab(/"cfb2h":"([^"]+)"/) || "",
+            sid: grab(/"FdrFJe":"([^"]+)"/) || "",
+          };
+        }
+        return this._tokens;
+      },
+      // One batchexecute RPC -> the inner payload for `rpcid` (transport envelope
+      // stripped), or null. `inner` is the RPC-specific argument array.
+      async rpc(rpcid, inner) {
+        const { at, bl, sid } = await this.tokens();
+        const url =
+          "/_/BardChatUi/data/batchexecute?rpcids=" +
+          rpcid +
+          "&source-path=%2Fapp&bl=" +
+          encodeURIComponent(bl) +
+          "&f.sid=" +
+          encodeURIComponent(sid) +
+          "&hl=en&_reqid=" +
+          Math.floor(Math.random() * 1e6) +
+          "&rt=c";
+        const freq = JSON.stringify([
+          [[rpcid, JSON.stringify(inner), null, "generic"]],
+        ]);
+        const r = await fetch(url, {
+          method: "POST",
+          credentials: "include",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+          },
+          body: "f.req=" + encodeURIComponent(freq) + "&at=" + encodeURIComponent(at),
+        });
+        if (!r.ok)
+          throw new Error(r.status + " " + r.statusText + " — batchexecute " + rpcid);
+        // Responses are framed as )]}' then length-delimited JSON rows; ours is
+        // the "wrb.fr" row whose second field is our rpcid.
+        for (const line of (await r.text()).split("\n")) {
+          if (!line.startsWith("[[")) continue;
+          try {
+            for (const row of JSON.parse(line))
+              if (row[0] === "wrb.fr" && row[1] === rpcid) return JSON.parse(row[2]);
+          } catch (_) {}
+        }
+        return null;
+      },
+      async listConversations() {
+        const list = await this.rpc("MaZiqc", [13, null, [0, null, 1]]);
+        // Each entry: [id, title, …, [epochSec, nanos] updated, …]. (Only the
+        // first page is fetched today — no continuation cursor yet.)
+        return ((list && list[2]) || []).map((c) => {
+          const ts = Array.isArray(c[5])
+            ? new Date(c[5][0] * 1000).toISOString()
+            : undefined;
+          return { id: c[0], title: c[1] || "", updated_at: ts, created_at: ts };
+        });
+      },
+      async fetchFull(item) {
+        // hNvQHb returns the conversation's turns; upload the raw inner payload
+        // and let the server parser walk the nested-array structure.
+        const payload = await this.rpc(
+          "hNvQHb",
+          [item.id, 50, null, 1, [0], [4], null, 1],
+        );
+        return {
+          conversation_id: item.id,
+          title: item.title,
+          updated_at: item.updated_at,
+          payload,
+        };
+      },
+    },
   };
   const provider = PROVIDERS[location.hostname] || PROVIDERS["claude.ai"];
 
@@ -445,8 +537,8 @@
       const total = list.length;
       log("  found " + total + " conversations");
       if (!total) return;
-      // Keep only conversations active within the window (by last update). Both
-      // providers report ISO timestamps here (normalized in their adapters).
+      // Keep only conversations active within the window (by last update). Every
+      // adapter normalizes its list timestamps to ISO strings here.
       if (cfg.windowDays > 0) {
         const cutoff = Date.now() - cfg.windowDays * 24 * 60 * 60 * 1000;
         list = list.filter((c) => {

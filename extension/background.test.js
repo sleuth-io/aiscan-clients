@@ -325,3 +325,63 @@ test("upload throws when nothing is transcodable", async (t) => {
     /nothing to upload/,
   );
 });
+
+test("upload ships gemini conversations as raw JSON under projects/gemini", async (t) => {
+  const instanceUrl = "https://app.skills.new";
+  const store = {
+    config: { instanceUrl },
+    auth: { instanceUrl, accessToken: "tok", expiresAt: Date.now() + 3_600_000 },
+  };
+  global.chrome = {
+    runtime: {},
+    storage: {
+      local: {
+        get: async (key) => (typeof key === "string" ? { [key]: store[key] } : { ...store }),
+        set: async (obj) => Object.assign(store, obj),
+        remove: async (key) => delete store[key],
+      },
+    },
+  };
+  let captured = null;
+  global.fetch = async (url, opts) => {
+    captured = { url, opts };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ run: "AR_1" }) };
+  };
+  t.after(() => {
+    delete global.chrome;
+    delete global.fetch;
+  });
+
+  // Gemini conversations arrive already transport-unwrapped from the content
+  // script: { conversation_id, title, updated_at, payload }. No transcode — the
+  // server's gemini-web parser walks the raw payload.
+  const conv = {
+    conversation_id: "c_1",
+    title: "Weight Reduction",
+    updated_at: "2026-01-21T00:00:00.000Z",
+    payload: [[[["c_1", "r_1"], null, [["hi"], 4], [[["rc_1", ["hello"]]]], [1769009299, 0]]]],
+  };
+  const res = await upload({ provider: "gemini", conversations: [conv], windowDays: 0 }, 1);
+
+  assert.equal(res.sessions, 1);
+  assert.ok(captured.url.includes("source=gemini-web"));
+
+  const tar = zlib.gunzipSync(Buffer.from(captured.opts.body));
+  assert.equal(field(tar, 0, 15), "gemini/c_1.json");
+  const size = parseInt(field(tar, 124, 11), 8);
+  const fileJson = JSON.parse(field(tar, 512, size));
+  assert.equal(fileJson.conversation_id, "c_1");
+  assert.deepEqual(fileJson.payload, conv.payload);
+});
+
+test("upload skips gemini conversations whose payload failed to load", async (t) => {
+  global.chrome = {
+    runtime: {},
+    storage: { local: { get: async () => ({}), set: async () => {}, remove: async () => {} } },
+  };
+  t.after(() => delete global.chrome);
+  await assert.rejects(
+    upload({ provider: "gemini", conversations: [{ conversation_id: "c_1", payload: null }] }, 1),
+    /nothing to upload/,
+  );
+});
