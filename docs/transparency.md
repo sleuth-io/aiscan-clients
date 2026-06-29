@@ -9,6 +9,12 @@ machine. The client is open source so these claims are auditable in the code.
   customizations you have installed, and (for the browser extension) AI web conversations.
 - Capture is **read-only**: the client does not modify your files or settings.
 
+For **Claude Cowork** sessions specifically, the client collects only each session's metadata
+(`local_<id>.json`) and its transcript (`audit.jsonl`) — which together also record the skills
+and MCP servers that were in use. It deliberately does **not** collect a session's `.audit-key`
+(its signing secret), the files you uploaded into a session (`uploads/`), or the files Cowork
+produced (`outputs/`) — those are your own documents and never leave the machine.
+
 ## What is redacted (before anything leaves the machine)
 
 A conservative redaction pass runs locally and strips obvious secrets — environment variables,

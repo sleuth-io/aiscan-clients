@@ -16,12 +16,14 @@ import (
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture/claude"
+	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture/cowork"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/redact"
 )
 
 // recipes is the enabled capture sources. Adding a source = one line here.
 var recipes = []capture.Recipe{
 	claude.Recipe,
+	cowork.Recipe,
 }
 
 // Capture implements `aiscan capture`: collect raw artifacts from every

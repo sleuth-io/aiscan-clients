@@ -22,7 +22,7 @@
       "additionalProperties": false,
       "required": ["type", "format_version"],
       "properties": {
-        "type": { "type": "string", "examples": ["claude-code", "claude-web", "chatgpt-web", "gemini-web"] },
+        "type": { "type": "string", "examples": ["claude-code", "claude-cowork", "claude-web", "chatgpt-web", "gemini-web"] },
         "format_version": { "type": "string" }
       }
     },

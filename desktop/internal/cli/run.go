@@ -61,6 +61,7 @@ func Run(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	instance := fs.String("instance", defaultInstance, "aiscan instance URL to upload to")
 	windowDays := fs.Int("window-days", 0, "only capture files modified within the last N days (0 = no limit)")
+	source := fs.String("source", "", "only capture these comma-separated sources (e.g. claude-cowork); empty = all")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Capture local AI-tool usage, redact obvious secrets, and upload the")
 		fmt.Fprintln(os.Stderr, "redacted dump for analysis. Authorizes once via the device-code flow.")
@@ -71,11 +72,17 @@ func Run(args []string) error {
 		fmt.Fprintln(os.Stderr, header("Flags:"))
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--instance URL", 19)), "aiscan instance to upload to (default "+defaultInstance+")")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--window-days N", 19)), "only capture files modified within the last N days (0 = no limit)")
+		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--source LIST", 19)), "only capture these comma-separated sources (e.g. "+knownSourceList(recipes)+"); empty = all")
 	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
+		return err
+	}
+
+	selected, err := selectRecipes(recipes, *source)
+	if err != nil {
 		return err
 	}
 
@@ -85,7 +92,7 @@ func Run(args []string) error {
 	}
 
 	ctx := context.Background()
-	arts, errs := capture.Run(ctx, recipes, opts)
+	arts, errs := capture.Run(ctx, selected, opts)
 	for _, e := range errs {
 		fmt.Fprintf(os.Stderr, "%s %v\n", warn("warning:"), e)
 	}
@@ -255,6 +262,53 @@ func printRedactionSummary(w io.Writer, arts []capture.Artifact, s redact.Summar
 	} else {
 		fmt.Fprintln(w, dim("redacted: nothing matched"))
 	}
+}
+
+// selectRecipes filters recipes to the comma-separated source list, or returns
+// them all when the list is empty. An unrecognized source is an error (listing
+// the known ones) so a typo'd --source fails loudly instead of silently
+// capturing nothing.
+func selectRecipes(recipes []capture.Recipe, csv string) ([]capture.Recipe, error) {
+	if strings.TrimSpace(csv) == "" {
+		return recipes, nil
+	}
+	want := map[string]bool{}
+	for _, s := range strings.Split(csv, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			want[s] = true
+		}
+	}
+	var out []capture.Recipe
+	matched := map[string]bool{}
+	for _, r := range recipes {
+		if want[string(r.ID)] {
+			out = append(out, r)
+			matched[string(r.ID)] = true
+		}
+	}
+	var unknown []string
+	for s := range want {
+		if !matched[s] {
+			unknown = append(unknown, s)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return nil, fmt.Errorf("unknown --source %s; known sources: %s",
+			strings.Join(unknown, ", "), knownSourceList(recipes))
+	}
+	return out, nil
+}
+
+// knownSourceList is the sorted, comma-separated source ids for help text and
+// error messages.
+func knownSourceList(recipes []capture.Recipe) string {
+	ids := make([]string, 0, len(recipes))
+	for _, r := range recipes {
+		ids = append(ids, string(r.ID))
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ", ")
 }
 
 // sortedSourceIDs returns m's keys sorted, so output ordering is deterministic.
