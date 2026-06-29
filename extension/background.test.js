@@ -326,7 +326,7 @@ test("upload throws when nothing is transcodable", async (t) => {
   );
 });
 
-test("upload ships gemini conversations as raw JSON under projects/gemini", async (t) => {
+test("upload ships gemini conversations as raw JSON under top-level gemini/", async (t) => {
   const instanceUrl = "https://app.skills.new";
   const store = {
     config: { instanceUrl },

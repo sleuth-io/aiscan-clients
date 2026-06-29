@@ -174,25 +174,24 @@
       async listConversations() {
         // MaZiqc is token-paged: the response's [1] is the continuation token
         // (null when there are no more), passed back as the request's 2nd arg.
-        // Walk until it's exhausted, with id-dedup and a page cap so a repeated
-        // token can't loop forever. Each entry is [id, title, …, [epochSec,
-        // nanos] updated, …].
+        // The real terminator is token exhaustion; we also stop if the token
+        // stops advancing (defensive) and cap the page count. id-dedup guards
+        // against any overlap. Each entry is [id, title, …, [epochSec,nanos], …].
         const PAGE = 50;
         const convs = [];
         const seen = new Set();
         let token = null;
         for (let page = 0; page < 100; page++) {
           const resp = await this.rpc("MaZiqc", [PAGE, token, [0, null, 1]]);
-          let added = 0;
           for (const c of (resp && resp[2]) || []) {
             if (c && c[0] && !seen.has(c[0])) {
               seen.add(c[0]);
               convs.push(c);
-              added++;
             }
           }
-          token = resp && resp[1];
-          if (!token || !added) break;
+          const next = resp && resp[1];
+          if (!next || next === token) break;
+          token = next;
         }
         return convs.map((c) => {
           const ts = Array.isArray(c[5])
