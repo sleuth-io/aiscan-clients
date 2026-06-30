@@ -38,6 +38,13 @@ type Artifact struct {
 type Options struct {
 	// Since, if non-zero, drops artifacts last modified before it.
 	Since time.Time
+	// Until, if non-zero, drops artifacts last modified after it. Together with Since this carves
+	// a [Since, Until] modified-time slice (TEMPORARY: lets one machine's history be sliced into
+	// several uploads for testing the aggregate).
+	Until time.Time
+	// Ignore drops artifacts whose logical path contains any of these substrings (TEMPORARY: skip
+	// noisy projects locally).
+	Ignore []string
 }
 
 // Recipe is the declarative description of one source. Detect reports whether

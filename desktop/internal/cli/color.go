@@ -45,6 +45,10 @@ func warn(s string) string    { return style(ansiYellow, s) }
 func header(s string) string  { return style(ansiCyan, s) }
 func accent(s string) string  { return style(ansiBlue, s) } // sx's light-blue accent
 
+// ErrorPrefix is the red "error:" label commands print before a failure message.
+// Exported so the top-level command dispatcher styles failures consistently.
+func ErrorPrefix() string { return errorf("error:") }
+
 func style(code, s string) string {
 	if !colorEnabled() {
 		return s

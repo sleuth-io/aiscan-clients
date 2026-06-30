@@ -21,17 +21,17 @@ func main() {
 	switch os.Args[1] {
 	case "capture":
 		if err := cli.Capture(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
 			os.Exit(1)
 		}
 	case "login":
 		if err := cli.Login(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
 			os.Exit(1)
 		}
 	case "run":
 		if err := cli.Run(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
 			os.Exit(1)
 		}
 	case "version", "-v", "--version":

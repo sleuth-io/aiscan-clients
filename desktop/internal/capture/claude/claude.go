@@ -64,15 +64,23 @@ func captureSessions(ctx context.Context, opts capture.Options) ([]capture.Artif
 			return nil
 		}
 		if !opts.Since.IsZero() && info.ModTime().Before(opts.Since) {
-			return nil // outside the window
+			return nil // before the window
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil // skip this file, keep the rest
+		if !opts.Until.IsZero() && info.ModTime().After(opts.Until) {
+			return nil // after the window
 		}
 		rel, err := filepath.Rel(r, path)
 		if err != nil {
 			rel = d.Name()
+		}
+		for _, ig := range opts.Ignore {
+			if ig != "" && strings.Contains(rel, ig) {
+				return nil // explicitly ignored project/path
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil // skip this file, keep the rest
 		}
 		arts = append(arts, capture.Artifact{
 			Source: capture.SourceClaudeCode,
