@@ -33,6 +33,10 @@ func Capture(args []string) error {
 	fs := flag.NewFlagSet("capture", flag.ContinueOnError)
 	out := fs.String("out", "", "directory to write collected artifacts to (omit to only summarize)")
 	windowDays := fs.Int("window-days", 0, "only collect files modified within the last N days (0 = no limit)")
+	fs.IntVar(windowDays, "w", 0, "alias for --window-days")
+	untilDays := fs.Int("until-days", 0, "only collect files modified more than N days ago (0 = up to now)")
+	fs.IntVar(untilDays, "u", 0, "alias for --until-days")
+	ignore := fs.String("ignore", "", "comma-separated path substrings to skip (e.g. a noisy project)")
 	noRedact := fs.Bool("no-redact", false, "skip secret redaction (debug; shows raw captured bytes)")
 	showRedactions := fs.Bool("show-redactions", false, "debug: print every redacted match")
 	fs.Usage = func() {
@@ -44,9 +48,15 @@ func Capture(args []string) error {
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, header("Flags:"))
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--out DIR", 19)), "write collected artifacts to DIR (omit to only summarize)")
-		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--window-days N", 19)), "only collect files modified within the last N days (0 = no limit)")
+		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("-w, --window-days N", 19)), "only collect files modified within the last N days (0 = no limit)")
+		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("-u, --until-days N", 19)), "only collect files modified more than N days ago (0 = up to now)")
+		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--ignore LIST", 19)), "comma-separated path substrings to skip (e.g. a noisy project)")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--no-redact", 19)), "skip secret redaction (debug; shows raw captured bytes)")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--show-redactions", 19)), "debug: print every redacted match (shows the matched secret values)")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, dim("  --window-days and --until-days both count days-ago and combine into a"))
+		fmt.Fprintln(os.Stderr, dim("  [window-days, until-days] modified-time slice, so until-days must be less"))
+		fmt.Fprintln(os.Stderr, dim("  than window-days (e.g. --window-days 10 --until-days 5 = modified 10-5 days ago)."))
 	}
 	if err := fs.Parse(args); err != nil {
 		// -h / --help is not an error: flag already printed usage.
@@ -56,9 +66,24 @@ func Capture(args []string) error {
 		return err
 	}
 
+	// Both count days-ago, so until-days must be the smaller (more recent) bound;
+	// otherwise Since lands after Until and the window is empty — reject it loudly
+	// rather than silently capturing nothing.
+	if *windowDays > 0 && *untilDays > 0 && *untilDays >= *windowDays {
+		return fmt.Errorf("--until-days (%d) must be less than --window-days (%d): the window is [window-days, until-days] counting days ago", *untilDays, *windowDays)
+	}
+
 	opts := capture.Options{}
 	if *windowDays > 0 {
 		opts.Since = time.Now().AddDate(0, 0, -*windowDays)
+	}
+	if *untilDays > 0 {
+		opts.Until = time.Now().AddDate(0, 0, -*untilDays)
+	}
+	for _, s := range strings.Split(*ignore, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			opts.Ignore = append(opts.Ignore, s)
+		}
 	}
 
 	arts, errs := capture.Run(context.Background(), recipes, opts)
