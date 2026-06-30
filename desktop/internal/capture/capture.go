@@ -23,7 +23,10 @@ const (
 	// SourceClaudeCowork is Claude Cowork (the desktop app's agentic mode), which
 	// keeps its working sessions on local disk.
 	SourceClaudeCowork SourceID = "claude-cowork"
-	// SourceCursor, SourceCopilot, ... land here as they are implemented.
+	// SourceCursor is the Cursor editor, whose agent ("composer") chats live in a
+	// SQLite store rather than per-session files.
+	SourceCursor SourceID = "cursor"
+	// SourceCopilot, ... land here as they are implemented.
 )
 
 // Artifact is one raw, un-normalized file collected from a source. Data is the

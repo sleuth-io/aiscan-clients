@@ -17,6 +17,7 @@ import (
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture/claude"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture/cowork"
+	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture/cursor"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/redact"
 )
 
@@ -24,6 +25,7 @@ import (
 var recipes = []capture.Recipe{
 	claude.Recipe,
 	cowork.Recipe,
+	cursor.Recipe,
 }
 
 // Capture implements `aiscan capture`: collect raw artifacts from every
