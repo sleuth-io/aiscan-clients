@@ -1,12 +1,14 @@
-// Content script — runs on claude.ai / chatgpt.com in the page's own origin.
+// Content script — runs on claude.ai / chatgpt.com / gemini.google.com in the
+// page's own origin.
 //
 // A declared content script auto-runs in both Chrome and Firefox without a
 // separate host-permission grant, and its fetch() is same-origin to the site,
 // so it carries your first-party session credentials (exactly like running
 // fetch in the page console). It injects a small button + status panel; on
-// click it pulls the conversations and hands them to the background worker,
-// which transcodes, authorizes, and uploads them to the configured Pulse
-// instance (the cross-origin upload + OAuth can't run on the site's origin).
+// click it pulls the conversations raw and hands them to the background worker,
+// which authorizes and uploads them to the configured Pulse instance (the
+// cross-origin upload + OAuth can't run on the site's origin). Parsing is the
+// server's job — the client never transcodes.
 //
 // Layout: provider adapters (what to fetch, per site) → DOM helper → UI (the
 // button + settings/log popovers) → HTTP helpers → scan orchestration.
@@ -24,12 +26,13 @@
   let cfg = { windowDays: 7, instanceUrl: DEFAULT_INSTANCE };
 
   // ---- Provider adapters -------------------------------------------------
-  // claude.ai and chatgpt.com expose different chat APIs, but the scan flow is
-  // identical: list conversations -> filter by the history window -> fetch each
-  // transcript -> hand the batch to the background worker. Each adapter knows
-  // only how to list and fetch on its own origin (where the page's cookies /
-  // token apply). The adapter's `name` is sent to background.js so it picks the
-  // matching transcoder. Detection is purely by hostname.
+  // claude.ai, chatgpt.com, and gemini.google.com expose different chat APIs,
+  // but the scan flow is identical: list conversations -> filter by the history
+  // window -> fetch each transcript raw -> hand the batch to the background
+  // worker. Each adapter knows only how to list and fetch on its own origin
+  // (where the page's cookies / token apply). The adapter's `name` is sent to
+  // background.js so it files the upload under the right provider dir; the
+  // server picks the parser from there. Detection is purely by hostname.
   const PROVIDERS = {
     "claude.ai": {
       name: "claude-ai",

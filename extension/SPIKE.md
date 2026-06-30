@@ -7,26 +7,25 @@ daemon in the loop anymore.
 
 The capture flow (list conversations → window-filter → fetch each transcript → upload) is shared;
 a **per-site adapter** in `content.js` (keyed by hostname) knows how to list and fetch on each
-origin, and `background.js` packs the batch for that provider's server-side parser. Adding a site
-is one adapter plus one packer.
+origin, and `background.js` uploads the batch **raw** for that provider's server-side parser.
+Adding a site is one adapter here plus one parser in Pulse.
 
-Two packaging shapes exist today: claude.ai and chatgpt.com **transcode** to Claude Code JSONL
-(the server reuses its Claude Code parser); Gemini is captured **raw** (the content script only
-unwraps the RPC transport) and parsed by a dedicated server-side parser. New surfaces should
-prefer the raw-capture + server-parser shape — it keeps the client thin and the fragile parsing
-testable in Python.
+**The client is thin: it never parses.** Every provider uploads its raw API capture (one JSON
+file per conversation under its own dir — `claude-web/`, `chatgpt/`, `gemini/`) and a dedicated
+server-side parser in Pulse (`parsers/{claude_web,chatgpt_web,gemini_web}.py`) turns it into the
+normalized session model. This keeps each provider's quirky shape — and the fragile parsing — in
+Python where it's unit-tested, instead of shipping transcoders in the extension.
 
 ## Pieces
 
-- **`content.js`** — runs on claude.ai / chatgpt.com in the **page's own origin**, so its `fetch`
-  carries your first-party session credentials. Injects an on-page button (bottom-right), picks
-  the **provider adapter** for the current hostname, enumerates your conversations, fetches each
-  transcript, and hands the batch (tagged with the provider name) to the background worker. It
-  does no parsing.
-- **`background.js`** — the real client. It (1) packs each conversation per `PROVIDER_CFG` —
-  claude.ai/chatgpt.com transcode to Claude Code JSONL under `projects/{claude-ai,chatgpt}/<id>.jsonl`,
-  Gemini ships its raw payload under `gemini/<id>.json` — into a **gzipped tar** (the wire format
-  `/api/aiscan/ingest` expects), (2) gets an OAuth access token via the **device-code flow**
+- **`content.js`** — runs on the AI site in the **page's own origin**, so its `fetch` carries your
+  first-party session credentials. Injects an on-page button (bottom-right), picks the **provider
+  adapter** for the current hostname, enumerates your conversations, fetches each transcript, and
+  hands the batch (tagged with the provider name) to the background worker. It does no parsing.
+- **`background.js`** — the real client. It (1) packs each conversation per `PROVIDER_CFG` as raw
+  JSON under its provider dir (`claude-web/<uuid>.json`, `chatgpt/<id>.json`, `gemini/<id>.json`)
+  — into a **gzipped tar** (the wire format `/api/aiscan/ingest` expects), (2) gets an OAuth
+  access token via the **device-code flow**
   (well-known client `sleuth-aiscan`, cached in `chrome.storage`), and (3) POSTs the gzip to
   `{instance}/api/aiscan/ingest?source=<claude-web|chatgpt-web|gemini-web>`. The server stores it
   and runs the pipeline on a Celery worker; we get back a run GID and link to its report.
@@ -120,14 +119,12 @@ node --test        # or: npm test
 
 ## Known spike shortcuts (not the v2 design)
 
-- The extension **transcodes** web conversations → Claude Code JSONL (`transcodeConversation` /
-  `transcodeChatGPTConversation` in `background.js`) and uploads them with `source=claude-web` or
-  `source=chatgpt-web`. The server reuses the Claude Code parser for the JSONL shape but stamps
-  the upload's source onto each session, so the report attributes them correctly. The real v2
-  server would expose dedicated versioned `claude-web` / `chatgpt-web` parsers mapping straight to
-  the normalized session model.
+- All three providers now upload **raw** and are parsed server-side (`parsers/claude_web.py`,
+  `parsers/chatgpt_web.py`, `parsers/gemini_web.py` in Pulse), each stamping its own `source`.
+  claude.ai/chatgpt.com still project onto the Claude Code event shape (so tool/MCP detection and
+  action classification are reused), but that projection now lives in Python, not the extension.
 - No on-device redaction yet; raw transcript text is uploaded (it's PII and stays server-side).
-- The claude.ai conversation list isn't paged (chatgpt.com's is).
-- claude.ai carries no token usage, so cost/token columns stay zero.
+- The claude.ai conversation list isn't paged (chatgpt.com's and Gemini's are).
+- claude.ai/chatgpt.com carry no token usage, so cost/token columns stay zero.
 - Per-message model isn't recorded by the API; the conversation-level model is applied to all
   assistant turns.
