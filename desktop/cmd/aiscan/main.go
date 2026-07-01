@@ -34,6 +34,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
 			os.Exit(1)
 		}
+	case "sync":
+		if err := cli.Sync(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
+			os.Exit(1)
+		}
 	case "version", "-v", "--version":
 		fmt.Println(cli.VersionString())
 	case "help", "-h", "--help":

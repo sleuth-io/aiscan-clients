@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
 
@@ -37,9 +38,10 @@ import (
 // Recipe is the Cursor capture source. Register it in the recipe list to enable
 // Cursor capture.
 var Recipe = capture.Recipe{
-	ID:      capture.SourceCursor,
-	Detect:  detect,
-	Capture: captureSessions,
+	ID:       capture.SourceCursor,
+	Detect:   detect,
+	Capture:  captureSessions,
+	Discover: discover,
 }
 
 // dbPath returns the Cursor global storage SQLite file. os.UserConfigDir resolves
@@ -124,6 +126,68 @@ func captureSessions(ctx context.Context, opts capture.Options) ([]capture.Artif
 		return arts, err
 	}
 	return arts, nil
+}
+
+// discover opens a read-only snapshot of the Cursor store and returns the
+// earliest composer activity time (lastUpdatedAt, falling back to createdAt) —
+// the lower bound of Cursor's available span, matching the field captureSessions
+// windows on. It reads only the composer rows' timestamps, not the message
+// bubbles. It returns the zero time when the store holds no composer.
+func discover(ctx context.Context) (time.Time, error) {
+	src, err := dbPath()
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	snap, cleanup, err := snapshot(ctx, src)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer cleanup()
+
+	db, err := sql.Open("sqlite", snap)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("open cursor db: %w", err)
+	}
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, "SELECT value FROM cursorDiskKV WHERE key LIKE 'composerData:%'")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("read composers: %w", err)
+	}
+	defer rows.Close()
+
+	var earliestMs int64
+	for rows.Next() {
+		if ctx.Err() != nil {
+			return time.Time{}, ctx.Err()
+		}
+		var value []byte
+		if err := rows.Scan(&value); err != nil {
+			return time.Time{}, err
+		}
+		var meta composerMeta
+		if err := json.Unmarshal(value, &meta); err != nil {
+			continue // unreadable row; skip, keep scanning
+		}
+		when := meta.LastUpdatedAt
+		if when == 0 {
+			when = meta.CreatedAt
+		}
+		if when == 0 {
+			continue
+		}
+		if earliestMs == 0 || when < earliestMs {
+			earliestMs = when
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return time.Time{}, err
+	}
+	if earliestMs == 0 {
+		return time.Time{}, nil
+	}
+	return time.UnixMilli(earliestMs).UTC(), nil
 }
 
 // buildArtifact turns one composerData row into a session artifact, or reports

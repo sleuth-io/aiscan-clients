@@ -42,8 +42,8 @@ type Options struct {
 	// Since, if non-zero, drops artifacts last modified before it.
 	Since time.Time
 	// Until, if non-zero, drops artifacts last modified after it. Together with Since this carves
-	// a [Since, Until] modified-time slice (TEMPORARY: lets one machine's history be sliced into
-	// several uploads for testing the aggregate).
+	// a [Since, Until] modified-time slice: the sync flow uses it to capture exactly the files
+	// that fall inside a single server-requested span.
 	Until time.Time
 	// Ignore drops artifacts whose logical path contains any of these substrings (TEMPORARY: skip
 	// noisy projects locally).
@@ -51,12 +51,19 @@ type Options struct {
 }
 
 // Recipe is the declarative description of one source. Detect reports whether
-// the tool is present on this machine; Capture reads its artifacts. Expressing
-// sources as data (a slice of Recipes) keeps "add a source" to one list entry.
+// the tool is present on this machine; Capture reads its artifacts; Discover
+// reports the earliest data the source has (for the sync flow's available span).
+// Expressing sources as data (a slice of Recipes) keeps "add a source" to one
+// list entry.
 type Recipe struct {
 	ID      SourceID
 	Detect  func() bool
 	Capture func(ctx context.Context, opts Options) ([]Artifact, error)
+	// Discover returns the earliest modification time of the source's data, used
+	// as the lower bound of the available span reported to the server. It returns
+	// the zero time when the source has no data. May be nil for sources that do
+	// not participate in sync.
+	Discover func(ctx context.Context) (time.Time, error)
 }
 
 // Run executes every available recipe and concatenates their artifacts. A

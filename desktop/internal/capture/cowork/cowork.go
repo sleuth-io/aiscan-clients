@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
 )
@@ -27,9 +28,10 @@ import (
 // Recipe is the Claude Cowork capture source. Register it in the recipe list to
 // enable Cowork capture.
 var Recipe = capture.Recipe{
-	ID:      capture.SourceClaudeCowork,
-	Detect:  detect,
-	Capture: captureSessions,
+	ID:       capture.SourceClaudeCowork,
+	Detect:   detect,
+	Capture:  captureSessions,
+	Discover: discover,
 }
 
 // sessionsDir is the Cowork sessions directory under one app-data base, e.g.
@@ -117,7 +119,10 @@ func captureSessions(ctx context.Context, opts capture.Options) ([]capture.Artif
 				return nil
 			}
 			if !opts.Since.IsZero() && info.ModTime().Before(opts.Since) {
-				return nil // outside the window
+				return nil // before the window
+			}
+			if !opts.Until.IsZero() && info.ModTime().After(opts.Until) {
+				return nil // after the window
 			}
 			data, err := os.ReadFile(path)
 			if err != nil {
@@ -142,4 +147,45 @@ func captureSessions(ctx context.Context, opts capture.Options) ([]capture.Artif
 		}
 	}
 	return arts, nil
+}
+
+// discover walks every Cowork sessions tree and returns the earliest captured
+// file's mtime, the lower bound of Cowork's available span. It reads no file
+// contents — only directory metadata — and prunes the same user-file and
+// skill/plugin subtrees as captureSessions. It returns the zero time when no
+// session file exists.
+func discover(ctx context.Context) (time.Time, error) {
+	var earliest time.Time
+	for _, root := range roots() {
+		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil // skip unreadable entries, keep walking
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if d.IsDir() {
+				if path != root && (strings.HasPrefix(d.Name(), ".") || prunedDirs[d.Name()]) {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if !wanted(d.Name()) {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			mt := info.ModTime()
+			if earliest.IsZero() || mt.Before(earliest) {
+				earliest = mt
+			}
+			return nil
+		})
+		if walkErr != nil {
+			return earliest, walkErr
+		}
+	}
+	return earliest, nil
 }
