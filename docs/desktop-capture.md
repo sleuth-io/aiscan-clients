@@ -9,7 +9,7 @@ The client is **thin**: `capture → redact → upload`. Parsing, normalization,
 and reporting are **all server-side**. The client stays small. **Do not add analysis to the client.**
 
 This doc covers **capture** and **redact**. **Upload** (and the device-code auth it rides on)
-is implemented — `aiscan run` does capture → redact → upload, and `aiscan login` authorizes
+is implemented — `aiscan sync` does capture → redact → upload, and `aiscan login` authorizes
 ahead of time; see [auth and upload](#auth-and-upload) below.
 
 ## The seam: one common Artifact type
@@ -125,7 +125,7 @@ name with zero false positives, without trying to detect arbitrary names.
 
 ## Auth and upload
 
-After redaction, `aiscan run` ships the dump to the server. Two shared, source-agnostic
+After redaction, `aiscan sync` ships the dump to the server. Two shared, source-agnostic
 packages handle it:
 
 - **`auth`** — device-code OAuth (RFC 8628) against the configured instance, matching the
@@ -134,20 +134,21 @@ packages handle it:
   well-known `sleuth-aiscan` client and holds **no embedded secret**; the only credential it
   stores is the short-lived access token, cached at `<config-dir>/aiscan/token.json` (mode
   `0600`, overridable with `AISCAN_CONFIG_DIR`) until ~60s before it expires. `aiscan login`
-  front-loads the approval; `aiscan run` also authorizes on first use.
+  front-loads the approval; `aiscan sync` also authorizes on first use.
 - **`upload`** — gzips a tar of the redacted artifacts and POSTs it to
-  `{instance}/api/aiscan/ingest?source=<id>&window_days=N&captured_start=<iso8601>&captured_end=<iso8601>`
+  `{instance}/api/aiscan/ingest?source=<id>&captured_start=<iso8601>&captured_end=<iso8601>&schema_version=N`
   with a `Bearer` token, mirroring the
   extension's proven wire format. Each artifact's leading source-id segment is stripped so the
   archive mirrors the tool's native layout (`claude-code/projects/p/s.jsonl` → `projects/p/s.jsonl`,
   i.e. `~/.claude/projects`). A `401` clears the cached token and re-authorizes once. The server
-  returns a run id, which the client renders as a report link.
+  records the upload as **evidence** for the declared span and returns an evidence gid, which the
+  client surfaces in its output. A needed span that holds no sessions is still posted with an
+  empty body, so the server records it as a confirmed-empty window and never asks for it again.
   - **Size limit / batching.** The server streams the ingest body, so the cap is the app's
     `MAX_UPLOAD_BYTES` (50 MiB on the *compressed* body). The client packs under `MaxCompressedBytes`
-    (45 MiB, measured) so a typical history uploads as a **single** batch — one scan session — and
-    only a very large one is split; as a backstop for a server or proxy that still rejects a body,
-    it halves a batch and retries on a `413`. When a capture does split, each part is a separate
-    run/report, surfaced in the CLI output.
+    (45 MiB, measured) so a typical span uploads as a **single** batch and only a very large one is
+    split (`SplitForUpload`). When a span does split, each part is posted separately under the same
+    declared window, surfaced as parts in the CLI output.
 
 > Note: the `protocol/upload-request.schema.json` JSON envelope (client/source/redaction/payload)
 > is still **DRAFT** and not yet sent on the wire — both clients currently POST the raw gzip with

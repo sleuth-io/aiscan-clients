@@ -48,22 +48,24 @@ Build and install the binary (Go 1.23+), then run it:
     # ensure ~/.local/bin is on your PATH (make install warns if not)
 
     aiscan login                       # authorize this machine (opens a browser to approve)
-    aiscan run                         # capture → redact → upload, then prints a report link
+    aiscan sync                         # capture → redact → upload the spans the server needs
 
-`aiscan run` does the whole pipeline in one shot (it also authorizes on first use, so `login`
-is optional). Useful flags:
+`aiscan sync` does the whole pipeline in one shot: it asks the server which time spans it still
+needs and uploads only those (it also authorizes on first use, so `login` is optional). Useful
+flags:
 
-    aiscan run --window-days 7         # only sessions modified in the last 7 days (0 = all)
-    aiscan run --instance https://my-instance.example.com   # target a non-default instance
+    aiscan sync --window-days 7        # only consider sessions modified in the last 7 days (0 = all)
+    aiscan sync --instance https://my-instance.example.com   # target a non-default instance
+    aiscan sync --no-upload            # capture + redact + summarize locally, upload nothing
 
-Want to see exactly what would be sent **before** uploading anything? `capture` is read-only
-and never uploads:
+Want to see exactly what would be sent **before** uploading anything? Use `sync --no-upload`,
+or the read-only `capture` verb which also lets you dump the redacted artifacts to disk:
 
     aiscan capture --window-days 7                 # print a per-source + redaction summary
     aiscan capture --out /tmp/dump                 # also write the redacted dump to inspect
     aiscan capture --show-redactions               # debug: list every redacted match
 
-Every run prints the **trust surface**: how many artifacts were collected and exactly what
+Every sync prints the **trust surface**: how many artifacts were collected and exactly what
 redaction stripped (e.g. `redacted: 27 (email 2, sk-key 18, …)`). The cached token lives at
 `<config-dir>/aiscan/token.json` (owner-only); delete it or re-run `login` to re-authorize.
 
@@ -97,14 +99,14 @@ single root Makefile (`make help` lists all targets):
     make lint            # go vet
     make prepush         # format check + lint + all tests
     make build           # build the `aiscan` binary into desktop/bin
-    make run ARGS="run --window-days 7"   # run a verb without installing
+    make run ARGS="sync --window-days 7"  # run a verb without installing
 
 See [`desktop/`](desktop/) and [`extension/`](extension/) for client-specific docs.
 
 ## Status
 
 **Browser extension:** working end-to-end (claude.ai + chatgpt.com → redact → upload).
-**Desktop client:** `login` / `capture` / `run` implemented (Claude Code capture, on-device
+**Desktop client:** `login` / `capture` / `sync` implemented (Claude Code capture, on-device
 redaction, device-code auth, and upload). The background agent, system tray, self-update, and
 additional capture sources (e.g. Cursor) are still to come.
 

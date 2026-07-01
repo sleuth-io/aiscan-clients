@@ -17,7 +17,8 @@ It does **not** parse, normalize, analyze, or build reports — that is the serv
 ## Modes (one binary)
 
 - `aiscan login` — authenticate (device-code OAuth).
-- `aiscan run` — capture → redact → upload once.
+- `aiscan capture` — collect + redact + summarize locally; never uploads (read-only inspect).
+- `aiscan sync` — capture → redact → upload the spans the server still needs (`--no-upload` to inspect).
 - `aiscan daemon` — resident agent with the system tray (`--no-tray` for headless).
 
 ## Build notes
