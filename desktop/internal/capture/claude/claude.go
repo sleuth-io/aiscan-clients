@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
 )
@@ -16,9 +17,10 @@ import (
 // Recipe is the Claude Code capture source. Register it in the recipe list to
 // enable Claude Code capture.
 var Recipe = capture.Recipe{
-	ID:      capture.SourceClaudeCode,
-	Detect:  detect,
-	Capture: captureSessions,
+	ID:       capture.SourceClaudeCode,
+	Detect:   detect,
+	Capture:  captureSessions,
+	Discover: discover,
 }
 
 // root returns the Claude Code projects directory (~/.claude/projects).
@@ -95,4 +97,40 @@ func captureSessions(ctx context.Context, opts capture.Options) ([]capture.Artif
 		return arts, walkErr
 	}
 	return arts, nil
+}
+
+// discover walks the projects tree and returns the earliest transcript mtime,
+// the lower bound of Claude Code's available span. It reads no file contents —
+// only directory metadata — so it is cheap relative to a full capture. It
+// returns the zero time when no transcript exists.
+func discover(ctx context.Context) (time.Time, error) {
+	r, err := root()
+	if err != nil {
+		return time.Time{}, err
+	}
+	var earliest time.Time
+	walkErr := filepath.WalkDir(r, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil // skip unreadable entries, keep walking
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		mt := info.ModTime()
+		if earliest.IsZero() || mt.Before(earliest) {
+			earliest = mt
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return earliest, walkErr
+	}
+	return earliest, nil
 }

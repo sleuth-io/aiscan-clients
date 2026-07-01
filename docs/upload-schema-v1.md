@@ -28,7 +28,7 @@ Run **per source**, discovery first:
    `schema_version`, and the available spans. The server returns the exact `neededSpans` to upload
    (`available − coverage`, floored, schema-scoped). The client never learns whether a schema bump
    or server-side migration happened — it just uploads what it's told.
-3. **Upload each needed span** — `POST /api/aiscan/evidence` with the span as the declared
+3. **Upload each needed span** — `POST /api/aiscan/ingest` with the span as the declared
    `[captured_start, captured_end]` and a gzip of the sessions overlapping it. **If a needed span
    has no sessions, still post it with an empty body** — that records a confirmed-empty window so
    the server never asks for it again.
@@ -37,12 +37,12 @@ Capture by file **mtime** (not session start) and tolerate overlap: a long sessi
 turns after an earlier sync is re-uploaded in full, and the server dedups by session id at report
 time. Declare the **span** as the window, not the files' own time range.
 
-## REST: `POST /api/aiscan/evidence`
+## REST: `POST /api/aiscan/ingest`
 
 The only binary surface. Streams a multi-MB gzip body, so it stays REST rather than GraphQL.
 
 ```
-POST /api/aiscan/evidence?source=<source>&captured_start=<iso8601>&captured_end=<iso8601>&schema_version=<int>
+POST /api/aiscan/ingest?source=<source>&captured_start=<iso8601>&captured_end=<iso8601>&schema_version=<int>
 Authorization: Bearer <device-code OAuth token>
 Content-Type: application/gzip
 Body: gzipped tar of the captured sessions, OR empty for a confirmed-empty window
