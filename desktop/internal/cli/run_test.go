@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/upload"
@@ -106,7 +107,7 @@ func TestUploadBatch_ReauthorizesOn401(t *testing.T) {
 	prompt := func(userCode, verifyURL string) { prompted = true } // no-op: don't open a browser
 
 	arts := []capture.Artifact{{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s.jsonl", Data: []byte("x\n")}}
-	res, err := uploadBatch(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, oneBatch(t, arts), prompt)
+	res, err := uploadBatch(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, time.Time{}, time.Time{}, oneBatch(t, arts), prompt)
 	if err != nil {
 		t.Fatalf("uploadBatch: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestUploadAdaptive_SplitsOn413(t *testing.T) {
 	}
 
 	token := "tok"
-	results, err := uploadAdaptive(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, oneBatch(t, arts), func(string, string) {})
+	results, err := uploadAdaptive(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, time.Time{}, time.Time{}, oneBatch(t, arts), func(string, string) {})
 	if err != nil {
 		t.Fatalf("uploadAdaptive: %v", err)
 	}
@@ -199,7 +200,7 @@ func TestUploadAdaptive_LoneSessionTooLarge(t *testing.T) {
 
 	arts := []capture.Artifact{{Source: capture.SourceClaudeCode, Path: "claude-code/projects/p/s.jsonl", Data: []byte("x\n")}}
 	token := "tok"
-	_, err := uploadAdaptive(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, oneBatch(t, arts), func(string, string) {})
+	_, err := uploadAdaptive(context.Background(), srv.URL, &token, capture.SourceClaudeCode, 0, time.Time{}, time.Time{}, oneBatch(t, arts), func(string, string) {})
 	if err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("want a clear 'too large' error, got %v", err)
 	}

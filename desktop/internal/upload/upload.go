@@ -55,11 +55,13 @@ const MaxCompressedBytes = 45 << 20
 
 // Params configures a single upload.
 type Params struct {
-	InstanceURL string             // e.g. https://app.skills.new (trailing slash optional)
-	Token       string             // bearer access token
-	Source      capture.SourceID   // wire source label; selects the server parser
-	WindowDays  int                // history window reported to the server (0 = all)
-	Artifacts   []capture.Artifact // redacted artifacts to upload
+	InstanceURL   string             // e.g. https://app.skills.new (trailing slash optional)
+	Token         string             // bearer access token
+	Source        capture.SourceID   // wire source label; selects the server parser
+	WindowDays    int                // history window reported to the server (0 = all)
+	CapturedStart time.Time          // window lower bound from --window-days (zero = unbounded); ISO 8601 on the wire
+	CapturedEnd   time.Time          // window upper bound from --until-days (zero = up to now); ISO 8601 on the wire
+	Artifacts     []capture.Artifact // redacted artifacts to upload
 }
 
 // Result summarizes a successful upload.
@@ -95,9 +97,26 @@ func UploadPacked(ctx context.Context, p Params, body []byte) (*Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
+	// The server requires the capture window as ISO 8601 (RFC 3339) timestamps.
+	// The window mirrors the --window-days/--until-days flags: CapturedStart is
+	// the lower bound (zero = unbounded) and CapturedEnd is the upper bound (zero =
+	// "up to now"). An open end defaults to now; an open start defaults to the Unix
+	// epoch (1970-01-01), the server's "from the beginning" sentinel — not Go's
+	// year-1 zero time.
+	capturedEnd := p.CapturedEnd
+	if capturedEnd.IsZero() {
+		capturedEnd = time.Now().UTC()
+	}
+	capturedStart := p.CapturedStart
+	if capturedStart.IsZero() {
+		capturedStart = time.Unix(0, 0).UTC()
+	}
+
 	endpoint := instance + "/api/aiscan/ingest?source=" +
 		url.QueryEscape(string(p.Source)) +
-		"&window_days=" + strconv.Itoa(p.WindowDays)
+		"&window_days=" + strconv.Itoa(p.WindowDays) +
+		"&captured_start=" + url.QueryEscape(capturedStart.UTC().Format(time.RFC3339)) +
+		"&captured_end=" + url.QueryEscape(capturedEnd.UTC().Format(time.RFC3339))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

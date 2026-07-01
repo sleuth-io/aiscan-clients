@@ -136,7 +136,8 @@ packages handle it:
   `0600`, overridable with `AISCAN_CONFIG_DIR`) until ~60s before it expires. `aiscan login`
   front-loads the approval; `aiscan run` also authorizes on first use.
 - **`upload`** — gzips a tar of the redacted artifacts and POSTs it to
-  `{instance}/api/aiscan/ingest?source=<id>&window_days=N` with a `Bearer` token, mirroring the
+  `{instance}/api/aiscan/ingest?source=<id>&window_days=N&captured_start=<iso8601>&captured_end=<iso8601>`
+  with a `Bearer` token, mirroring the
   extension's proven wire format. Each artifact's leading source-id segment is stripped so the
   archive mirrors the tool's native layout (`claude-code/projects/p/s.jsonl` → `projects/p/s.jsonl`,
   i.e. `~/.claude/projects`). A `401` clears the cached token and re-authorizes once. The server

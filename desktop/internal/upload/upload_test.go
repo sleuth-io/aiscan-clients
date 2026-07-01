@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
 )
@@ -101,6 +102,71 @@ func TestUpload_PostsAndParsesRun(t *testing.T) {
 	}
 	if res.RunID != "run-123" || res.ReportURL != srv.URL+"/aiscan/run-123" || res.Sessions != 2 {
 		t.Errorf("result = %#v", res)
+	}
+}
+
+// TestUpload_SendsCaptureWindow verifies the capture window derived from the
+// --window-days/--until-days flags is sent as RFC3339 captured_start/captured_end
+// query params.
+func TestUpload_SendsCaptureWindow(t *testing.T) {
+	start := time.Date(2026, 6, 1, 8, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 6, 20, 8, 0, 0, 0, time.UTC)
+	var gotStart, gotEnd string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotStart = r.URL.Query().Get("captured_start")
+		gotEnd = r.URL.Query().Get("captured_end")
+		w.Write([]byte(`{"run":"r"}`))
+	}))
+	defer srv.Close()
+
+	_, err := Upload(context.Background(), Params{
+		InstanceURL:   srv.URL,
+		Token:         "tok",
+		Source:        capture.SourceClaudeCode,
+		CapturedStart: start,
+		CapturedEnd:   end,
+		Artifacts:     arts(),
+	})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if gotStart != "2026-06-01T08:00:00Z" || gotEnd != "2026-06-20T08:00:00Z" {
+		t.Errorf("window start=%q end=%q", gotStart, gotEnd)
+	}
+}
+
+// TestUpload_OpenWindowDefaults verifies the default run (no --window-days /
+// --until-days, so both bounds zero) sends captured_start as the Unix epoch and
+// captured_end as ~now — i.e. "everything up to now".
+func TestUpload_OpenWindowDefaults(t *testing.T) {
+	var gotStart, gotEnd string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotStart = r.URL.Query().Get("captured_start")
+		gotEnd = r.URL.Query().Get("captured_end")
+		w.Write([]byte(`{"run":"r"}`))
+	}))
+	defer srv.Close()
+
+	// RFC3339 truncates to whole seconds, so allow a second of slack on the floor.
+	before := time.Now().UTC().Add(-time.Second)
+	_, err := Upload(context.Background(), Params{
+		InstanceURL: srv.URL,
+		Token:       "tok",
+		Source:      capture.SourceClaudeCode,
+		Artifacts:   arts(),
+	})
+	if err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if gotStart != "1970-01-01T00:00:00Z" {
+		t.Errorf("open start = %q, want the Unix epoch", gotStart)
+	}
+	end, err := time.Parse(time.RFC3339, gotEnd)
+	if err != nil {
+		t.Fatalf("captured_end %q not RFC3339: %v", gotEnd, err)
+	}
+	if end.Before(before) || end.After(time.Now().UTC().Add(time.Minute)) {
+		t.Errorf("open end = %q, want ~now", gotEnd)
 	}
 }
 
