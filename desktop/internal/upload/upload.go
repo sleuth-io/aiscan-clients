@@ -1,13 +1,14 @@
 // Package upload is the shared, source-agnostic uploader. It packs the redacted
-// artifacts into a gzipped tar and POSTs them to the server's ingest endpoint,
-// authorized by a per-user bearer token. Like redact, it runs once over all
-// sources and knows nothing about where artifacts came from.
+// artifacts into a gzipped tar and POSTs them to the server's ingest endpoint as
+// evidence for a declared capture span, authorized by a per-user bearer token.
+// Like redact, it runs once over all sources and knows nothing about where
+// artifacts came from.
 //
 // The wire format mirrors the browser extension (extension/background.js): a
 // gzipped tar of the redacted dump POSTed to {instance}/api/aiscan/ingest with
-// the source and history window as query params, so both clients hit the same
-// endpoint identically. The on-disk artifact paths are normalized to the tool's
-// native layout (see wireName) so the archive mirrors ~/.claude/projects.
+// the source, capture span, and schema version as query params. The on-disk
+// artifact paths are normalized to the tool's native layout (see wireName) so
+// the archive mirrors ~/.claude/projects.
 package upload
 
 import (
@@ -58,108 +59,6 @@ const MaxCompressedBytes = 45 << 20
 // every evidence upload and sync-plan query so the server can scope coverage.
 const SchemaVersionV1 = 1
 
-// Params configures a single upload.
-type Params struct {
-	InstanceURL   string             // e.g. https://app.skills.new (trailing slash optional)
-	Token         string             // bearer access token
-	Source        capture.SourceID   // wire source label; selects the server parser
-	WindowDays    int                // history window reported to the server (0 = all)
-	CapturedStart time.Time          // window lower bound from --window-days (zero = unbounded); ISO 8601 on the wire
-	CapturedEnd   time.Time          // window upper bound from --until-days (zero = up to now); ISO 8601 on the wire
-	Artifacts     []capture.Artifact // redacted artifacts to upload
-}
-
-// Result summarizes a successful upload.
-type Result struct {
-	ReportURL string // link to the run's report
-	RunID     string // server-assigned run id (empty if the server returned none)
-	Sessions  int    // number of artifacts uploaded
-}
-
-// Upload packs the artifacts into a gzipped tar and POSTs them to
-// {instance}/api/aiscan/ingest. It returns ErrUnauthorized on a 401 so the
-// caller can refresh the token and retry.
-func Upload(ctx context.Context, p Params) (*Result, error) {
-	if len(p.Artifacts) == 0 {
-		return nil, errors.New("upload: nothing to upload (no artifacts)")
-	}
-	body, err := buildTarGz(p.Artifacts)
-	if err != nil {
-		return nil, fmt.Errorf("upload: pack: %w", err)
-	}
-	return UploadPacked(ctx, p, body)
-}
-
-// UploadPacked POSTs an already-gzipped body (e.g. the one SplitForUpload built
-// to size the batch), so a caller that packed the artifacts to measure them does
-// not pay to gzip them again. p.Artifacts is used only for the session count.
-func UploadPacked(ctx context.Context, p Params, body []byte) (*Result, error) {
-	if len(p.Artifacts) == 0 {
-		return nil, errors.New("upload: nothing to upload (no artifacts)")
-	}
-	instance := strings.TrimRight(p.InstanceURL, "/")
-
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-
-	// The server requires the capture window as ISO 8601 (RFC 3339) timestamps.
-	// The window mirrors the --window-days/--until-days flags: CapturedStart is
-	// the lower bound (zero = unbounded) and CapturedEnd is the upper bound (zero =
-	// "up to now"). An open end defaults to now; an open start defaults to the Unix
-	// epoch (1970-01-01), the server's "from the beginning" sentinel — not Go's
-	// year-1 zero time.
-	capturedEnd := p.CapturedEnd
-	if capturedEnd.IsZero() {
-		capturedEnd = time.Now().UTC()
-	}
-	capturedStart := p.CapturedStart
-	if capturedStart.IsZero() {
-		capturedStart = time.Unix(0, 0).UTC()
-	}
-
-	endpoint := instance + "/api/aiscan/ingest?source=" +
-		url.QueryEscape(string(p.Source)) +
-		"&window_days=" + strconv.Itoa(p.WindowDays) +
-		"&captured_start=" + url.QueryEscape(capturedStart.UTC().Format(time.RFC3339)) +
-		"&captured_end=" + url.QueryEscape(capturedEnd.UTC().Format(time.RFC3339))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("content-type", "application/gzip")
-	req.Header.Set("authorization", "Bearer "+p.Token)
-
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	// Bound the read: the body is only used for the run id or an error message,
-	// neither of which is large, and we don't want a misbehaving server to
-	// stream an unbounded response into memory.
-	respBody, _ := io.ReadAll(io.LimitReader(res.Body, maxErrorBody))
-
-	if res.StatusCode == http.StatusUnauthorized {
-		return nil, ErrUnauthorized
-	}
-	if res.StatusCode == http.StatusRequestEntityTooLarge {
-		return nil, ErrPayloadTooLarge
-	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("upload: ingest %d: %s", res.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-
-	var parsed struct {
-		Run string `json:"run"`
-	}
-	_ = json.Unmarshal(respBody, &parsed)
-	reportURL := instance + "/aiscan"
-	if parsed.Run != "" {
-		reportURL = instance + "/aiscan/" + parsed.Run
-	}
-	return &Result{ReportURL: reportURL, RunID: parsed.Run, Sessions: len(p.Artifacts)}, nil
-}
-
 // EvidenceParams configures a single evidence upload to the v1 sync endpoint.
 type EvidenceParams struct {
 	InstanceURL   string           // e.g. https://app.skills.new (trailing slash optional)
@@ -179,8 +78,8 @@ type EvidenceResult struct {
 
 // UploadEvidence POSTs a gzipped tar body (or an empty body, for a confirmed-
 // empty window) to {instance}/api/aiscan/ingest with the declared span and
-// schema version as query params. It models UploadPacked but targets the v1
-// sync contract: the span — not a history-window count — is the metadata, and a
+// schema version as query params. It targets the v1 sync contract: the span —
+// not a history-window count — is the metadata, and a
 // zero-length body is valid (it records that the window was scanned and found
 // empty). It returns ErrUnauthorized on 401 and ErrPayloadTooLarge on 413 so the
 // caller can re-authorize or split and retry.
@@ -230,7 +129,7 @@ func UploadEvidence(ctx context.Context, p EvidenceParams, body []byte) (*Eviden
 
 // Batch is a group of artifacts and the gzipped tar body that carries them,
 // sized to fit a single ingest POST. SplitForUpload builds Body while measuring,
-// so the eventual UploadPacked reuses it instead of gzipping again.
+// so the eventual UploadEvidence reuses it instead of gzipping again.
 type Batch struct {
 	Artifacts []capture.Artifact
 	Body      []byte

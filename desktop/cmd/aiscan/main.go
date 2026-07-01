@@ -2,7 +2,7 @@
 // it, and uploads it to the aiscan server for analysis. It also runs as a
 // background agent with a system-tray UI and keeps itself up to date.
 //
-// The `login`, `capture`, and `run` verbs are implemented; daemon/tray and
+// The `login`, `capture`, and `sync` verbs are implemented; daemon/tray and
 // self-update are to follow.
 package main
 
@@ -26,11 +26,6 @@ func main() {
 		}
 	case "login":
 		if err := cli.Login(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
-			os.Exit(1)
-		}
-	case "run":
-		if err := cli.Run(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
 			os.Exit(1)
 		}
