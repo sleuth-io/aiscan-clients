@@ -59,6 +59,14 @@ test-desktop: ## Run Go tests with the race detector
 test-extension: ## Run JS tests
 	npm --prefix extension test
 
+.PHONY: build-extension
+build-extension: ## Stage the extension for both browsers into extension/dist (dev)
+	npm --prefix extension run build
+
+.PHONY: lint-extension
+lint-extension: build-extension ## web-ext lint the staged Firefox build
+	npm --prefix extension run lint
+
 .PHONY: lint
 lint: ## Lint everything (Go vet; JS has no linter configured)
 	cd $(DESKTOP) && go vet ./...

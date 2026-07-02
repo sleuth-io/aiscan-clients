@@ -9,6 +9,7 @@
 /extension/node_modules/
 /extension/dist/
 /extension/web-ext-artifacts/
+/extension/*.pem
 
 # OS / editor
 .DS_Store

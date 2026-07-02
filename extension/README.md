@@ -22,3 +22,9 @@ server. One codebase builds for Chrome and Firefox (Manifest V3).
 src/            shared capture engine + config interpreter
 manifest/       per-browser manifest differences (chrome, firefox)
 ```
+
+## Packaging & distribution
+
+See [PACKAGING.md](PACKAGING.md) for building the signed Firefox `.xpi` (self-hosted, unlisted)
+and the Chrome `.crx` + update manifest (enterprise force-install). `npm run build` stages both
+targets; `npm run sign:firefox` and `npm run pack:chrome` produce the release artifacts.

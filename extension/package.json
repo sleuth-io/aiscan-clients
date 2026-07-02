@@ -1,9 +1,21 @@
 {
   "name": "aiscan-extension",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "private": true,
-  "description": "Tests for the aiscan WebExtension service functions. No build step and no dependencies — uses the Node built-in test runner.",
+  "description": "aiscan WebExtension. Runtime is dependency-free; devDependencies exist only for tests and packaging (build/sign the Firefox XPI and Chrome CRX).",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "build:firefox": "node scripts/build.mjs firefox",
+    "build:chrome": "node scripts/build.mjs chrome",
+    "build": "npm run build:firefox && npm run build:chrome",
+    "lint": "web-ext lint --source-dir dist/firefox --self-hosted",
+    "keygen:chrome": "node scripts/pack-chrome.mjs --keygen",
+    "pack:chrome": "npm run build:chrome && node scripts/pack-chrome.mjs",
+    "sign:firefox": "web-ext sign --channel=unlisted --source-dir dist/firefox --artifacts-dir dist/artifacts",
+    "package:firefox": "npm run build:firefox && npm run sign:firefox && node scripts/gen-firefox-updates.mjs"
+  },
+  "devDependencies": {
+    "crx3": "^1.1.3",
+    "web-ext": "^8.3.0"
   }
 }
