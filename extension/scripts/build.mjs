@@ -14,6 +14,7 @@
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { transformManifest } from './lib.mjs'
 
 const target = process.argv[2]
 if (!['firefox', 'chrome'].includes(target)) {
@@ -30,34 +31,14 @@ const outDir = join(root, 'dist', target)
 // directory is tests, packaging, or docs and must NOT ship in the extension.
 const RUNTIME_FILES = ['background.js', 'content.js']
 
-// Host permissions that only make sense against a local Pulse dev instance. Stripped from prod
-// builds so the shipped extension can't reach dev; kept in dev builds for local testing.
-const DEV_ONLY_HOST_PATTERNS = ['http://dev.pulse.sleuth.io/*', 'https://dev.pulse.sleuth.io/*']
-
 // Where the stable pointer files (Chrome update manifest / Firefox updates.json) are published.
-const UPDATE_BASE_URL = (process.env.AISCAN_UPDATE_BASE_URL || 'https://sleuth-io.github.io/aiscan-clients/').replace(/\/*$/, '/')
+const updateBaseUrl = process.env.AISCAN_UPDATE_BASE_URL || 'https://sleuth-io.github.io/aiscan-clients/'
 
 await rm(outDir, { recursive: true, force: true })
 await mkdir(outDir, { recursive: true })
 
-const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'))
-
-if (isProd) {
-  manifest.host_permissions = (manifest.host_permissions || []).filter((h) => !DEV_ONLY_HOST_PATTERNS.includes(h))
-}
-
-if (target === 'chrome') {
-  // gecko settings are Firefox-only; drop them so Chrome doesn't flag an unknown manifest key.
-  delete manifest.browser_specific_settings
-  if (isProd) {
-    // Self-hosted auto-update: Chrome polls this update manifest (only meaningful once installed
-    // via enterprise policy). The AMO linter rejects a top-level update_url, so Chrome-only.
-    manifest.update_url = `${UPDATE_BASE_URL}update_manifest.xml`
-  }
-} else if (target === 'firefox' && isProd) {
-  // Self-hosted auto-update for Firefox: gecko.update_url points at the updates.json we publish.
-  manifest.browser_specific_settings.gecko.update_url = `${UPDATE_BASE_URL}updates.json`
-}
+const source = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'))
+const manifest = transformManifest(source, { target, isProd, updateBaseUrl })
 
 await writeFile(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
 for (const f of RUNTIME_FILES) await copyFile(join(root, f), join(outDir, f))

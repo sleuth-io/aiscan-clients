@@ -10,6 +10,7 @@ import { readdirSync } from 'node:fs'
 import { copyFile, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildFirefoxUpdates } from './lib.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = join(root, 'dist', 'artifacts')
@@ -37,13 +38,7 @@ await copyFile(join(artifacts, signed), xpiPath)
 
 const hash = 'sha256:' + createHash('sha256').update(await readFile(xpiPath)).digest('hex')
 
-const updates = {
-  addons: {
-    [addonId]: {
-      updates: [{ version, update_link: `${releaseBase}aiscan.xpi`, update_hash: hash }],
-    },
-  },
-}
+const updates = buildFirefoxUpdates({ addonId, version, releaseBase, hash })
 await writeFile(join(artifacts, 'updates.json'), JSON.stringify(updates, null, 2) + '\n')
 
 console.log(
