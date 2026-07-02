@@ -10,8 +10,11 @@ DESKTOP := desktop
 BINARY  := aiscan
 PREFIX  ?= $(HOME)/.local
 
-# Version metadata stamped into the binary (see internal/buildinfo).
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Version metadata stamped into the binary (see internal/buildinfo). Release
+# tags are prefixed per client (desktop-vX.Y.Z); strip the prefix so the
+# binary reports plain semver. No desktop tag reachable → "dev", which the
+# autoupdater treats as never-update.
+VERSION ?= $(shell (git describe --tags --match 'desktop-v*' --dirty 2>/dev/null || echo desktop-vdev) | sed 's/^desktop-v//')
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%d)
 BI      := github.com/sleuth-io/aiscan-clients/desktop/internal/buildinfo

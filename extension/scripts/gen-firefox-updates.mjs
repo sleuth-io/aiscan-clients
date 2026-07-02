@@ -23,7 +23,12 @@ if (!addonId) {
   process.exit(1)
 }
 
-const releaseBase = withTrailingSlash(process.env.AISCAN_RELEASE_BASE_URL || 'https://github.com/sleuth-io/aiscan-clients/releases/latest/download/')
+// Pin the exact release for this version — never releases/latest, which is meaningless in a
+// multi-client repo (a desktop CLI release would hijack it and break extension auto-update).
+const releaseBase = withTrailingSlash(
+  process.env.AISCAN_RELEASE_BASE_URL ||
+    `https://github.com/sleuth-io/aiscan-clients/releases/download/extension-v${version}/`
+)
 
 // web-ext writes the signed file into dist/artifacts as <name>-<version>.xpi; grab the newest xpi
 // that isn't our own normalized output.
