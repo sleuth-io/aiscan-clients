@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "aiscan chat capture",
+  "name": "Sleuth AI Insights",
   "version": "0.0.4",
-  "description": "Pull your claude.ai, chatgpt.com, and Gemini conversations and upload them to a Pulse aiscan instance for analysis.",
+  "description": "Captures your claude.ai, chatgpt.com, and Gemini conversations and uploads a redacted copy to Sleuth for analysis.",
   "permissions": ["storage", "tabs"],
   "host_permissions": [
     "https://claude.ai/*",
@@ -25,9 +25,9 @@
     }
   ],
   "action": {
-    "default_title": "aiscan — open claude.ai, chatgpt.com, or Gemini to scan"
+    "default_title": "Sleuth AI Insights — open claude.ai, chatgpt.com, or Gemini to scan"
   },
   "browser_specific_settings": {
-    "gecko": { "id": "aiscan-spike@sleuth.io", "strict_min_version": "115.0" }
+    "gecko": { "id": "ai-insights@sleuth.io", "strict_min_version": "115.0" }
   }
 }
