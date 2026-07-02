@@ -267,7 +267,7 @@
 
   const gear = el("button", {
     text: "⚙",
-    title: "aiscan settings (instance + history window)",
+    title: "Sleuth AI Insights settings (instance + history window)",
     style:
       "padding:8px 11px 8px 9px;background:#c4634a;color:#fff;border:none;cursor:pointer;" +
       "font:18px system-ui;line-height:1;display:flex;align-items:center",

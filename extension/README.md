@@ -22,3 +22,10 @@ server. One codebase builds for Chrome and Firefox (Manifest V3).
 src/            shared capture engine + config interpreter
 manifest/       per-browser manifest differences (chrome, firefox)
 ```
+
+## Packaging & distribution
+
+- [DISTRIBUTION.md](DISTRIBUTION.md) — the map: how the whole build → sign → release → install flow
+  fits together, where everything lives, and how it's hosted. Start here if you're new to it.
+- [PACKAGING.md](PACKAGING.md) — the manual: exact commands and env vars for building the signed
+  Firefox `.xpi` and the Chrome `.crx` + update manifest.
