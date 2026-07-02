@@ -35,9 +35,17 @@ See `README.md` and `docs/transparency.md`.
   a shape here, once.
 - `docs/` — public transparency docs.
 
+## Releases — tag conventions
+
+Multiple clients share this repo, so **no release uses a bare `vX.Y.Z` tag**. Each client
+prefixes its tags with its directory name: `desktop-vX.Y.Z` (Go CLI, built by
+`release-desktop.yml` on tag push) and `extension-vX.Y.Z` (browser extension, released by
+`release-extension.yml` on manifest-version bumps). Never mark a release "latest" and never
+link `releases/latest` — pin exact tags.
+
 ## desktop/ (Go) — commands & conventions
 
-- Module `github.com/sleuth-io/aiscan-clients/desktop`, Go 1.23. Run commands from `desktop/`.
+- Module `github.com/sleuth-io/aiscan-clients/desktop`, Go 1.24. Run commands from `desktop/`.
 - Build `go build ./...` · Test `go test ./...` · Vet `go vet ./...`
 - Keep capture/redact/upload/self-update **pure Go** (`CGO_ENABLED=0`). Only the system tray
   pulls in Cgo on macOS — isolate it so the rest cross-compiles cleanly.

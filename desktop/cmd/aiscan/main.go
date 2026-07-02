@@ -2,18 +2,30 @@
 // it, and uploads it to the aiscan server for analysis. It also runs as a
 // background agent with a system-tray UI and keeps itself up to date.
 //
-// The `login`, `capture`, and `sync` verbs are implemented; daemon/tray and
-// self-update are to follow.
+// The `login`, `capture`, `sync`, and `update` verbs are implemented;
+// daemon/tray are to follow.
 package main
 
 import (
 	"fmt"
 	"os"
 
+	"github.com/sleuth-io/aiscan-clients/desktop/internal/autoupdate"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/cli"
 )
 
 func main() {
+	// Resolve the executable before any binary swap — afterwards
+	// /proc/self/exe points at a deleted inode.
+	exe, _ := os.Executable()
+	if autoupdate.ApplyPendingUpdate() {
+		autoupdate.Reexec(exe)
+	}
+	// Daily background check, unless the user is updating explicitly.
+	if len(os.Args) < 2 || os.Args[1] != "update" {
+		autoupdate.CheckAndUpdateInBackground()
+	}
+
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, cli.Help())
 		os.Exit(2)
@@ -31,6 +43,11 @@ func main() {
 		}
 	case "sync":
 		if err := cli.Sync(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
+			os.Exit(1)
+		}
+	case "update":
+		if err := cli.Update(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
 			os.Exit(1)
 		}

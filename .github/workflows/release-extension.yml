@@ -4,6 +4,11 @@ name: Release extension
 # sign both browsers, publish a GitHub Release with the binaries, and deploy the stable pointer
 # files (Chrome update_manifest.xml + Firefox updates.json) to GitHub Pages. Bump the manifest
 # version in a PR to ship; no bump = no-op.
+#
+# Releases are tagged extension-vX.Y.Z — every client in this repo prefixes its tags (the desktop
+# CLI uses desktop-v*), so nothing owns bare vX.Y.Z. The pointer files pin the exact release
+# download URL rather than releases/latest, which is meaningless in a multi-client repo, and the
+# release is never marked "latest" for the same reason.
 
 on:
   push:
@@ -42,9 +47,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "v${{ steps.ver.outputs.version }}" >/dev/null 2>&1; then
+          if gh release view "extension-v${{ steps.ver.outputs.version }}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::v${{ steps.ver.outputs.version }} already released — nothing to do."
+            echo "::notice::extension-v${{ steps.ver.outputs.version }} already released — nothing to do."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -72,6 +77,7 @@ jobs:
         working-directory: extension
         env:
           AISCAN_BUILD_ENV: prod
+          AISCAN_RELEASE_BASE_URL: https://github.com/sleuth-io/aiscan-clients/releases/download/extension-v${{ steps.ver.outputs.version }}/
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: npm run package:firefox
@@ -81,6 +87,7 @@ jobs:
         working-directory: extension
         env:
           AISCAN_BUILD_ENV: prod
+          AISCAN_RELEASE_BASE_URL: https://github.com/sleuth-io/aiscan-clients/releases/download/extension-v${{ steps.ver.outputs.version }}/
           # Optional guard: if set, the pack fails when the signing key yields a different extension
           # id (a wrong CHROME_SIGNING_KEY would silently break auto-update for managed browsers).
           AISCAN_EXPECTED_APP_ID: ${{ vars.CHROME_EXTENSION_ID }}
@@ -90,9 +97,9 @@ jobs:
         if: steps.gate.outputs.exists == 'false'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: v${{ steps.ver.outputs.version }}
-          make_latest: true
+          tag_name: extension-v${{ steps.ver.outputs.version }}
+          name: extension-v${{ steps.ver.outputs.version }}
+          make_latest: false
           files: |
             extension/dist/artifacts/aiscan.crx
             extension/dist/artifacts/aiscan.xpi

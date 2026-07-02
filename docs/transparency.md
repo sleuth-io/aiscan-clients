@@ -37,5 +37,7 @@ key-shaped strings, and (configurably) file contents — before upload.
 
 ## Updates
 
-The desktop client keeps itself up to date by downloading signed, checksum-verified releases
-and restarting itself. The browser extension updates through the browser's extension store.
+The desktop client keeps itself up to date by downloading checksum-verified releases from this
+repository's GitHub Releases (tags `desktop-vX.Y.Z`) and restarting itself. Set
+`AISCAN_DISABLE_AUTOUPDATER=1` to opt out; `aiscan update` updates on demand. The browser
+extension updates through the browser's update mechanism.

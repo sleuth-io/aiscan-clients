@@ -1,0 +1,110 @@
+name: Release desktop
+
+# On a desktop-vX.Y.Z tag: test, cross-compile the pure-Go CLI for all targets,
+# and publish a GitHub Release whose assets follow the naming go-selfupdate
+# matches on (aiscan_<Os>_<arch>.tar.gz, amd64 → x86_64) plus a sha256
+# checksums.txt the client verifies downloads against. Hand-rolled rather than
+# GoReleaser because prefixed tags in a multi-client repo are a GoReleaser Pro
+# feature. Never marked "latest" — client releases share this repo, so the
+# latest pointer is meaningless and extension update URLs must not depend on it.
+
+on:
+  push:
+    tags: ['desktop-v*']
+
+permissions:
+  contents: write # create the Release
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: desktop/go.mod
+      - name: Vet
+        working-directory: desktop
+        run: go vet ./...
+      - name: Test
+        working-directory: desktop
+        run: go test ./...
+
+  release:
+    name: Build and release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Skip if already released
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$GITHUB_REF_NAME already released — nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v6
+        if: steps.gate.outputs.exists == 'false'
+        with:
+          go-version-file: desktop/go.mod
+
+      - name: Build all targets
+        if: steps.gate.outputs.exists == 'false'
+        env:
+          CGO_ENABLED: 0
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%d)"
+          BI="github.com/sleuth-io/aiscan-clients/desktop/internal/buildinfo"
+          LDFLAGS="-s -w -X ${BI}.Version=${VERSION} -X ${BI}.Commit=${COMMIT} -X ${BI}.Date=${DATE}"
+
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            GOOS="${target%/*}"
+            GOARCH="${target#*/}"
+            # go-selfupdate matches assets case-insensitively on <os>_<arch>
+            # suffixes; x86_64 is its alias for amd64.
+            case "$GOARCH" in
+              amd64) ARCH_LABEL=x86_64 ;;
+              *)     ARCH_LABEL="$GOARCH" ;;
+            esac
+            OS_LABEL="$(tr '[:lower:]' '[:upper:]' <<< "${GOOS:0:1}")${GOOS:1}"
+
+            BIN=aiscan
+            [ "$GOOS" = "windows" ] && BIN=aiscan.exe
+            outdir="dist/build/${GOOS}_${GOARCH}"
+            mkdir -p "$outdir"
+            (cd desktop && GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath -ldflags "$LDFLAGS" -o "../${outdir}/${BIN}" ./cmd/aiscan)
+
+            archive="aiscan_${OS_LABEL}_${ARCH_LABEL}"
+            if [ "$GOOS" = "windows" ]; then
+              (cd "$outdir" && zip -q "../../${archive}.zip" "$BIN")
+            else
+              tar -czf "dist/${archive}.tar.gz" -C "$outdir" "$BIN"
+            fi
+          done
+
+          (cd dist && sha256sum aiscan_*.tar.gz aiscan_*.zip > checksums.txt)
+          ls -l dist
+
+      - name: Create GitHub Release
+        if: steps.gate.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          gh release create "$GITHUB_REF_NAME" \
+            dist/aiscan_*.tar.gz dist/aiscan_*.zip dist/checksums.txt \
+            --title "$GITHUB_REF_NAME" \
+            --latest=false \
+            --notes "aiscan desktop CLI ${VERSION}. Installed clients pick this up automatically; or run \`aiscan update\`."

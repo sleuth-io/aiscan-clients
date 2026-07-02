@@ -48,14 +48,18 @@ const manifest = JSON.parse(await readFile(join(srcDir, 'manifest.json'), 'utf8'
 const version = manifest.version
 
 // Two URLs: the update manifest lives at a STABLE location (Pages) that IT bakes into policy
-// once; the CRX itself is a Release asset served from the stable `latest/download` URL.
+// once; the CRX itself is pinned to this version's Release — never releases/latest, which is
+// meaningless in a multi-client repo (a desktop CLI release would hijack it and break auto-update).
 const updateBase = withTrailingSlash(process.env.AISCAN_UPDATE_BASE_URL || 'https://sleuth-io.github.io/aiscan-clients/')
-const releaseBase = withTrailingSlash(process.env.AISCAN_RELEASE_BASE_URL || 'https://github.com/sleuth-io/aiscan-clients/releases/latest/download/')
+const releaseBase = withTrailingSlash(
+  process.env.AISCAN_RELEASE_BASE_URL ||
+    `https://github.com/sleuth-io/aiscan-clients/releases/download/extension-v${version}/`
+)
 
 const artifacts = join(root, 'dist', 'artifacts')
 await mkdir(artifacts, { recursive: true })
 
-// Stable filename — the Release tag carries the version, so the CRX URL never changes.
+// Stable filename; the per-version URL lives only in update_manifest.xml, regenerated each release.
 const crxPath = join(artifacts, 'aiscan.crx')
 const xmlPath = join(artifacts, 'update_manifest.xml')
 const crxURL = `${releaseBase}aiscan.crx`
