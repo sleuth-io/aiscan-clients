@@ -31,7 +31,7 @@ import (
 // never sent over the wire.
 func Sync(args []string) error {
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
-	instance := fs.String("instance", defaultInstance, "aiscan instance URL to sync with")
+	instance := fs.String("instance", defaultInstance(), "aiscan instance URL to sync with")
 	source := fs.String("source", "", "only sync these comma-separated sources (e.g. claude-cowork); empty = all")
 	windowDays := fs.Int("window-days", 0, "only sync data from within the last N days (0 = no limit)")
 	fs.IntVar(windowDays, "w", 0, "alias for --window-days")
@@ -51,7 +51,7 @@ func Sync(args []string) error {
 		fmt.Fprintln(os.Stderr, "  "+accent("aiscan sync [flags]"))
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, header("Flags:"))
-		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--instance URL", 21)), "aiscan instance to sync with (default "+defaultInstance+")")
+		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--instance URL", 21)), "aiscan instance to sync with (default "+defaultInstance()+")")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--source LIST", 21)), "only sync these comma-separated sources (e.g. "+knownSourceList(recipes)+"); empty = all")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("-w, --window-days N", 21)), "only sync data from within the last N days (0 = no limit)")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("-u, --until-days N", 21)), "only sync data modified more than N days ago (0 = up to now)")
@@ -284,10 +284,20 @@ func uploadEvidence(ctx context.Context, instance string, token *string, id capt
 	return res, nil
 }
 
+// errAuthRequired means the server rejected the token and the caller is
+// non-interactive (daemon), so re-running the device flow — which needs a
+// human in a browser — is not an option. The stale token is already cleared.
+var errAuthRequired = errors.New("authorization required")
+
 // reauthorize clears the cached token and runs the device-code flow again,
-// returning the fresh token.
+// returning the fresh token. A nil prompt marks a non-interactive caller:
+// it fails with errAuthRequired instead of silently starting a device flow
+// nobody will approve.
 func reauthorize(ctx context.Context, instance string, prompt auth.Prompt) (string, error) {
 	_ = auth.ClearToken(instance)
+	if prompt == nil {
+		return "", errAuthRequired
+	}
 	fresh, err := auth.EnsureToken(ctx, instance, prompt)
 	if err != nil {
 		return "", fmt.Errorf("re-authorize: %w", err)

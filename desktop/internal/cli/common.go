@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -10,9 +11,20 @@ import (
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/capture"
 )
 
-// defaultInstance is the production aiscan instance the client targets unless
-// --instance overrides it (matches the extension's default).
-const defaultInstance = "https://app.skills.new"
+// prodInstance is the production aiscan instance (matches the extension's
+// default).
+const prodInstance = "https://app.skills.new"
+
+// defaultInstance is the instance a command targets unless --instance
+// overrides it: the AISCAN_INSTANCE environment variable when set (so the
+// daemon's LaunchAgent plist can point a machine at a test server without
+// flags), otherwise production.
+func defaultInstance() string {
+	if v := strings.TrimSpace(os.Getenv("AISCAN_INSTANCE")); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	return prodInstance
+}
 
 // devicePrompt returns an auth.Prompt that tells the user how to approve the
 // device authorization and opens the approval page in their browser.

@@ -1,12 +1,22 @@
 name: Release desktop
 
-# On a desktop-vX.Y.Z tag: test, cross-compile the pure-Go CLI for all targets,
-# and publish a GitHub Release whose assets follow the naming go-selfupdate
-# matches on (aiscan_<Os>_<arch>.tar.gz, amd64 → x86_64) plus a sha256
-# checksums.txt the client verifies downloads against. Hand-rolled rather than
-# GoReleaser because prefixed tags in a multi-client repo are a GoReleaser Pro
-# feature. Never marked "latest" — client releases share this repo, so the
-# latest pointer is meaningless and extension update URLs must not depend on it.
+# On a desktop-vX.Y.Z tag: test, build, and publish a GitHub Release. Assets:
+#
+#   - aiscan_<Os>_<arch>.tar.gz / .zip — CLI binaries, named the way
+#     go-selfupdate matches (amd64 → x86_64) so installed clients self-update
+#     from them. darwin builds happen on a macOS runner because the system
+#     tray needs Cgo/Cocoa there; the same tray-enabled binary ships in the
+#     tarball and the app bundle, so a binary swap never loses the tray.
+#   - Aiscan.dmg — the macOS app bundle (arm64), ad-hoc signed, with an
+#     /Applications symlink. Deliberately named without <os>_<arch> tokens so
+#     go-selfupdate never picks it over the tarball.
+#   - checksums.txt — sha256 manifest over all of the above; clients verify
+#     downloads against it.
+#
+# Hand-rolled rather than GoReleaser because prefixed tags in a multi-client
+# repo are a GoReleaser Pro feature. Never marked "latest" — client releases
+# share this repo, so the latest pointer is meaningless and extension update
+# URLs must not depend on it.
 
 on:
   push:
@@ -16,8 +26,28 @@ permissions:
   contents: write # create the Release
 
 jobs:
+  gate:
+    name: Skip if already released
+    runs-on: ubuntu-latest
+    outputs:
+      exists: ${{ steps.gate.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$GITHUB_REF_NAME already released — nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     name: Test
+    needs: gate
+    if: needs.gate.outputs.exists == 'false'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -31,34 +61,19 @@ jobs:
         working-directory: desktop
         run: go test ./...
 
-  release:
-    name: Build and release
+  build-linux-windows:
+    name: Build linux + windows
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-
-      - name: Skip if already released
-        id: gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::$GITHUB_REF_NAME already released — nothing to do."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: actions/setup-go@v6
-        if: steps.gate.outputs.exists == 'false'
         with:
           go-version-file: desktop/go.mod
 
-      - name: Build all targets
-        if: steps.gate.outputs.exists == 'false'
+      - name: Build
         env:
-          CGO_ENABLED: 0
+          CGO_ENABLED: 0 # the tray is pure Go off macOS
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#desktop-v}"
@@ -68,7 +83,7 @@ jobs:
           LDFLAGS="-s -w -X ${BI}.Version=${VERSION} -X ${BI}.Commit=${COMMIT} -X ${BI}.Date=${DATE}"
 
           mkdir -p dist
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+          for target in linux/amd64 linux/arm64 windows/amd64; do
             GOOS="${target%/*}"
             GOARCH="${target#*/}"
             # go-selfupdate matches assets case-insensitively on <os>_<arch>
@@ -93,18 +108,82 @@ jobs:
               tar -czf "dist/${archive}.tar.gz" -C "$outdir" "$BIN"
             fi
           done
-
-          (cd dist && sha256sum aiscan_*.tar.gz aiscan_*.zip > checksums.txt)
+          rm -rf dist/build
           ls -l dist
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-windows
+          path: dist/*
+          if-no-files-found: error
+
+  build-darwin:
+    name: Build macOS
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: desktop/go.mod
+
+      - name: Build binaries, app bundle, dmg
+        env:
+          CGO_ENABLED: 1 # the tray needs Cocoa on macOS
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          COMMIT="$(git rev-parse --short HEAD)"
+          DATE="$(date -u +%Y-%m-%d)"
+          BI="github.com/sleuth-io/aiscan-clients/desktop/internal/buildinfo"
+          LDFLAGS="-s -w -X ${BI}.Version=${VERSION} -X ${BI}.Commit=${COMMIT} -X ${BI}.Date=${DATE}"
+
+          mkdir -p dist
+          for GOARCH in arm64 amd64; do
+            case "$GOARCH" in
+              amd64) ARCH_LABEL=x86_64 ;;
+              *)     ARCH_LABEL="$GOARCH" ;;
+            esac
+            outdir="dist/build/darwin_${GOARCH}"
+            mkdir -p "$outdir"
+            (cd desktop && GOARCH="$GOARCH" \
+              go build -trimpath -ldflags "$LDFLAGS" -o "../${outdir}/aiscan" ./cmd/aiscan)
+            tar -czf "dist/aiscan_Darwin_${ARCH_LABEL}.tar.gz" -C "$outdir" aiscan
+          done
+
+          # The .app ships the same arm64 binary the tarball carries, so a
+          # go-selfupdate binary swap inside the bundle changes nothing else.
+          desktop/packaging/macos/make-dmg.sh dist/build/darwin_arm64/aiscan "$VERSION" dist
+          rm -rf dist/build
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-darwin
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Create release
+    needs: [build-linux-windows, build-darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Create GitHub Release
-        if: steps.gate.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#desktop-v}"
+          (cd dist && sha256sum aiscan_*.tar.gz aiscan_*.zip Aiscan.dmg > checksums.txt)
+          ls -l dist
           gh release create "$GITHUB_REF_NAME" \
-            dist/aiscan_*.tar.gz dist/aiscan_*.zip dist/checksums.txt \
+            dist/aiscan_*.tar.gz dist/aiscan_*.zip dist/Aiscan.dmg dist/checksums.txt \
+            --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --latest=false \
-            --notes "aiscan desktop CLI ${VERSION}. Installed clients pick this up automatically; or run \`aiscan update\`."
+            --notes "aiscan desktop ${VERSION}. Mac app: download Aiscan.dmg and drag Aiscan to Applications. CLI: installed clients pick this up automatically, or run \`aiscan update\`."

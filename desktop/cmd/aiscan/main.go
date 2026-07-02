@@ -1,9 +1,7 @@
 // Command aiscan is the desktop client: it captures local AI-tool usage, redacts
 // it, and uploads it to the aiscan server for analysis. It also runs as a
-// background agent with a system-tray UI and keeps itself up to date.
-//
-// The `login`, `capture`, `sync`, and `update` verbs are implemented;
-// daemon/tray are to follow.
+// background agent with a system-tray UI (`aiscan daemon`) and keeps itself up
+// to date.
 package main
 
 import (
@@ -27,10 +25,24 @@ func main() {
 	}
 
 	if len(os.Args) < 2 {
+		// A double-clicked macOS app bundle launches with no argv; that user
+		// wants the tray agent, not CLI help printed into the void.
+		if cli.LaunchedFromAppBundle() {
+			if err := cli.Daemon(nil); err != nil {
+				fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
+				os.Exit(1)
+			}
+			return
+		}
 		fmt.Fprintln(os.Stderr, cli.Help())
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "daemon":
+		if err := cli.Daemon(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)
+			os.Exit(1)
+		}
 	case "capture":
 		if err := cli.Capture(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, cli.ErrorPrefix(), err)

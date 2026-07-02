@@ -42,8 +42,12 @@ func TestCheckAndUpdateDevBuild(t *testing.T) {
 	useTempCache(t)
 	setVersion(t, "dev")
 
-	if err := checkAndUpdate(); err != nil {
+	updated, err := checkAndUpdate()
+	if err != nil {
 		t.Errorf("expected dev build to be a silent no-op, got: %v", err)
+	}
+	if updated {
+		t.Error("expected dev build to never report an update")
 	}
 }
 
