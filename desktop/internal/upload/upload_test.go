@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -81,9 +82,12 @@ func TestSplitForUpload_KeepsBatchesUnderLimit(t *testing.T) {
 	in := randArts(t, 10, 4096) // ~40 KiB incompressible total
 	const max = 12 << 10        // 12 KiB ceiling → expect ~4 batches
 
-	batches, err := SplitForUpload(in, max)
+	batches, oversized, err := SplitForUpload(in, max)
 	if err != nil {
 		t.Fatalf("SplitForUpload: %v", err)
+	}
+	if len(oversized) != 0 {
+		t.Fatalf("no single artifact exceeds the ceiling, want none oversized, got %d", len(oversized))
 	}
 	if len(batches) < 2 {
 		t.Fatalf("expected the oversized set to be split, got %d batch(es)", len(batches))
@@ -107,12 +111,15 @@ func TestSplitForUpload_KeepsBatchesUnderLimit(t *testing.T) {
 
 func TestSplitForUpload_LoneOversizedArtifact(t *testing.T) {
 	in := randArts(t, 1, 8192)
-	batches, err := SplitForUpload(in, 1024) // far below the single artifact's size
+	batches, oversized, err := SplitForUpload(in, 1024) // far below the single artifact's size
 	if err != nil {
 		t.Fatalf("SplitForUpload: %v", err)
 	}
-	if len(batches) != 1 || len(batches[0].Artifacts) != 1 {
-		t.Fatalf("a lone oversized artifact should be returned alone, got %d batch(es)", len(batches))
+	if len(batches) != 0 {
+		t.Fatalf("a lone oversized artifact should not be batched, got %d batch(es)", len(batches))
+	}
+	if len(oversized) != 1 {
+		t.Fatalf("a lone oversized artifact should be reported oversized, got %d", len(oversized))
 	}
 }
 
@@ -210,7 +217,10 @@ func TestUploadEvidence_Unauthorized(t *testing.T) {
 }
 
 func TestUploadEvidence_PayloadTooLarge(t *testing.T) {
+	defer fastBackoff(t)()
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
 		w.WriteHeader(http.StatusRequestEntityTooLarge)
 		w.Write([]byte("<html>413</html>"))
 	}))
@@ -223,5 +233,73 @@ func TestUploadEvidence_PayloadTooLarge(t *testing.T) {
 	}, body)
 	if !errors.Is(err, ErrPayloadTooLarge) {
 		t.Fatalf("want ErrPayloadTooLarge, got %v", err)
+	}
+	// 413 is permanent — it must be surfaced immediately, never retried.
+	if got := calls.Load(); got != 1 {
+		t.Errorf("413 was POSTed %d times; it must not be retried", got)
+	}
+}
+
+// fastBackoff shrinks the retry backoff so retry tests run in milliseconds, and
+// returns a restore func for defer.
+func fastBackoff(t *testing.T) func() {
+	t.Helper()
+	base, max := transientBackoffBase, transientBackoffMax
+	transientBackoffBase, transientBackoffMax = time.Millisecond, 2*time.Millisecond
+	return func() { transientBackoffBase, transientBackoffMax = base, max }
+}
+
+// A gateway hiccup (502/503/504) or network blip is transient: retry with
+// backoff until it clears. Ingest is idempotent, so the retries don't duplicate.
+func TestUploadEvidence_RetriesTransient5xx(t *testing.T) {
+	defer fastBackoff(t)()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) <= 2 {
+			w.WriteHeader(http.StatusBadGateway) // 502 twice, then recover
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		w.Write([]byte(`{"evidence":"EV-ok"}`))
+	}))
+	defer srv.Close()
+
+	body, _ := buildTarGz(arts())
+	res, err := UploadEvidence(context.Background(), EvidenceParams{
+		InstanceURL: srv.URL, Token: "x", Source: capture.SourceClaudeCode,
+		CapturedStart: time.Now(), CapturedEnd: time.Now(), SchemaVersion: SchemaVersionV1,
+	}, body)
+	if err != nil {
+		t.Fatalf("want success after retries, got %v", err)
+	}
+	if res.EvidenceGID != "EV-ok" {
+		t.Errorf("evidence = %q, want EV-ok", res.EvidenceGID)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Errorf("server saw %d posts, want 3 (2×502 + 1×202)", got)
+	}
+}
+
+// A server that never recovers exhausts the retries and returns an error —
+// after exactly the bounded number of attempts, not forever.
+func TestUploadEvidence_GivesUpOnPersistent5xx(t *testing.T) {
+	defer fastBackoff(t)()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable) // 503 forever
+	}))
+	defer srv.Close()
+
+	body, _ := buildTarGz(arts())
+	_, err := UploadEvidence(context.Background(), EvidenceParams{
+		InstanceURL: srv.URL, Token: "x", Source: capture.SourceClaudeCode,
+		CapturedStart: time.Now(), CapturedEnd: time.Now(), SchemaVersion: SchemaVersionV1,
+	}, body)
+	if err == nil {
+		t.Fatal("want an error after exhausting retries, got nil")
+	}
+	if got := calls.Load(); got != transientMaxRetries+1 {
+		t.Errorf("server saw %d posts, want %d (1 initial + %d retries)", got, transientMaxRetries+1, transientMaxRetries)
 	}
 }

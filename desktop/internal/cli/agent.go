@@ -34,7 +34,8 @@ type agent struct {
 	st tray.State
 
 	states        chan tray.State
-	syncReq       chan struct{}
+	syncReq       chan struct{} // manual "Sync now": upload what the plan says is missing
+	forceReq      chan struct{} // manual "Sync all": re-upload everything, ignoring coverage
 	loginInFlight atomic.Bool
 	// restartPending: an update was swapped on disk; Reexec at the next idle
 	// point so the running image catches up.
@@ -50,6 +51,7 @@ func newAgent(instance, exe string, interval time.Duration, logger *log.Logger, 
 		logW:     logW,
 		states:   make(chan tray.State, 1),
 		syncReq:  make(chan struct{}, 1),
+		forceReq: make(chan struct{}, 1),
 	}
 }
 
@@ -76,11 +78,13 @@ func (a *agent) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-first.C:
-			a.syncOnce(ctx, false)
+			a.syncOnce(ctx, false, false)
 		case <-ticker.C:
-			a.syncOnce(ctx, false)
+			a.syncOnce(ctx, false, false)
 		case <-a.syncReq:
-			a.syncOnce(ctx, true)
+			a.syncOnce(ctx, true, false)
+		case <-a.forceReq:
+			a.syncOnce(ctx, true, true)
 		case <-updates.C:
 			a.checkUpdate()
 		}
@@ -98,8 +102,10 @@ func (a *agent) run(ctx context.Context) {
 // syncOnce runs one capture→redact→upload pass over all sources. Scheduled
 // runs respect pause and never prompt for auth; a manual "Sync now" ignores
 // pause (the user explicitly asked) but still never prompts — login is its own
-// action.
-func (a *agent) syncOnce(ctx context.Context, manual bool) {
+// action. With force set (manual "Sync all"), it ignores the server's coverage
+// and re-uploads the whole available history, backfilling anything a past
+// partial or failed sync left the server missing.
+func (a *agent) syncOnce(ctx context.Context, manual, force bool) {
 	if !manual && a.snapshot().Paused {
 		return
 	}
@@ -113,7 +119,7 @@ func (a *agent) syncOnce(ctx context.Context, manual bool) {
 	a.setState(func(s *tray.State) { s.Syncing = true; s.LastErr = "" })
 	a.logger.Printf("sync starting")
 
-	cfg := syncConfig{instance: a.instance}
+	cfg := syncConfig{instance: a.instance, force: force}
 	var err error
 	for _, r := range recipes {
 		if err = syncSource(ctx, cfg, &token, r, nil, a.logW); err != nil {
@@ -184,6 +190,15 @@ func (a *agent) refreshIdentity(ctx context.Context) {
 func (a *agent) SyncNow() {
 	select {
 	case a.syncReq <- struct{}{}:
+	default:
+	}
+}
+
+// SyncAll queues a manual full sync — re-upload everything, ignoring the
+// server's coverage. A no-op if one is already queued.
+func (a *agent) SyncAll() {
+	select {
+	case a.forceReq <- struct{}{}:
 	default:
 	}
 }

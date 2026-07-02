@@ -39,6 +39,7 @@ type State struct {
 // block: clicks arrive on the tray's event goroutine.
 type Actions interface {
 	SyncNow()
+	SyncAll()
 	SetPaused(bool)
 	LogIn()
 	LogOut()
@@ -65,7 +66,8 @@ func onReady(a Actions, states <-chan State, version string) {
 	status.Disable()
 	status.Hide()
 	systray.AddSeparator()
-	syncNow := systray.AddMenuItem("Sync now", "Capture, redact, and upload now")
+	syncNow := systray.AddMenuItem("Sync now", "Capture, redact, and upload what the server is missing")
+	syncAll := systray.AddMenuItem("Sync all", "Re-upload all local history, ignoring what the server already has")
 	pause := systray.AddMenuItem("Pause automatic sync", "Skip the hourly scheduled syncs until resumed")
 	systray.AddSeparator()
 	login := systray.AddMenuItem("Log in…", "Authorize this machine in your browser")
@@ -81,9 +83,11 @@ func onReady(a Actions, states <-chan State, version string) {
 		for {
 			select {
 			case st = <-states:
-				render(st, account, status, syncNow, pause, login, logout)
+				render(st, account, status, syncNow, syncAll, pause, login, logout)
 			case <-syncNow.ClickedCh:
 				a.SyncNow()
+			case <-syncAll.ClickedCh:
+				a.SyncAll()
 			case <-pause.ClickedCh:
 				a.SetPaused(!st.Paused)
 			case <-login.ClickedCh:
@@ -101,7 +105,7 @@ func onReady(a Actions, states <-chan State, version string) {
 
 // render maps a State onto the menu items. Called only from the event
 // goroutine, so no locking.
-func render(st State, account, status, syncNow, pause, login, logout *systray.MenuItem) {
+func render(st State, account, status, syncNow, syncAll, pause, login, logout *systray.MenuItem) {
 	if st.Username != "" {
 		account.SetTitle("Logged in as " + st.Username)
 		login.Hide()
@@ -119,12 +123,14 @@ func render(st State, account, status, syncNow, pause, login, logout *systray.Me
 		status.Hide()
 	}
 
-	// Sync now is pointless while logged out (a pass would just skip) and
-	// unavailable mid-sync.
+	// Both sync actions are pointless while logged out (a pass would just skip)
+	// and unavailable mid-sync.
 	if st.Syncing || st.Username == "" {
 		syncNow.Disable()
+		syncAll.Disable()
 	} else {
 		syncNow.Enable()
+		syncAll.Enable()
 	}
 	if st.Paused {
 		pause.SetTitle("Resume automatic sync")
