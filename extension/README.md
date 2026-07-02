@@ -25,6 +25,7 @@ manifest/       per-browser manifest differences (chrome, firefox)
 
 ## Packaging & distribution
 
-See [PACKAGING.md](PACKAGING.md) for building the signed Firefox `.xpi` (self-hosted, unlisted)
-and the Chrome `.crx` + update manifest (enterprise force-install). `npm run build` stages both
-targets; `npm run sign:firefox` and `npm run pack:chrome` produce the release artifacts.
+- [DISTRIBUTION.md](DISTRIBUTION.md) — the map: how the whole build → sign → release → install flow
+  fits together, where everything lives, and how it's hosted. Start here if you're new to it.
+- [PACKAGING.md](PACKAGING.md) — the manual: exact commands and env vars for building the signed
+  Firefox `.xpi` and the Chrome `.crx` + update manifest.
