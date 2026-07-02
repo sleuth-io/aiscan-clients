@@ -36,9 +36,13 @@ export function transformManifest(manifest, { target, isProd, updateBaseUrl }) {
     delete m.browser_specific_settings
     // Self-hosted auto-update. The AMO linter rejects a top-level update_url, so Chrome-only.
     if (isProd) m.update_url = `${base}update_manifest.xml`
-  } else if (target === 'firefox' && isProd) {
+  } else if (target === 'firefox') {
+    // Firefox runs the background as scripts, not a service worker; drop the Chrome-only key so
+    // AMO's linter doesn't warn (MANIFEST_FIELD_UNSUPPORTED). Guarded so we never leave Firefox
+    // with no background entrypoint.
+    if (m.background?.service_worker && m.background?.scripts?.length) delete m.background.service_worker
     // Firefox polls this updates.json (gecko.update_url) for self-hosted auto-update.
-    m.browser_specific_settings.gecko.update_url = `${base}updates.json`
+    if (isProd) m.browser_specific_settings.gecko.update_url = `${base}updates.json`
   }
 
   return m

@@ -54,6 +54,16 @@ test('prod firefox keeps gecko and wires gecko.update_url (no top-level update_u
   assert.equal(fx.browser_specific_settings.gecko.id, 'x@y')
 })
 
+test('firefox drops the Chrome-only background.service_worker, keeps scripts', () => {
+  const src = { ...FIXTURE, background: { service_worker: 'background.js', scripts: ['background.js'] } }
+  const fx = transformManifest(src, { target: 'firefox', isProd: false, updateBaseUrl: BASE })
+  assert.equal(fx.background.service_worker, undefined)
+  assert.deepEqual(fx.background.scripts, ['background.js'])
+  // Chrome keeps it.
+  const ch = transformManifest(src, { target: 'chrome', isProd: false, updateBaseUrl: BASE })
+  assert.equal(ch.background.service_worker, 'background.js')
+})
+
 test('update base url is normalized to a single trailing slash', () => {
   const ch = transformManifest(FIXTURE, { target: 'chrome', isProd: true, updateBaseUrl: 'https://example.test/base' })
   assert.equal(ch.update_url, 'https://example.test/base/update_manifest.xml')

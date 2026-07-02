@@ -28,6 +28,12 @@
     "default_title": "Sleuth AI Insights — open claude.ai, chatgpt.com, or Gemini to scan"
   },
   "browser_specific_settings": {
-    "gecko": { "id": "ai-insights@sleuth.io", "strict_min_version": "115.0" }
+    "gecko": {
+      "id": "ai-insights@sleuth.io",
+      "strict_min_version": "115.0",
+      "data_collection_permissions": {
+        "required": ["personalCommunications", "websiteContent"]
+      }
+    }
   }
 }
