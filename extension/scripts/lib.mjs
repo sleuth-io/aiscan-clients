@@ -6,7 +6,19 @@
 // builds so the shipped extension can't reach dev; kept in dev builds for local testing.
 export const DEV_ONLY_HOST_PATTERNS = ['http://dev.pulse.sleuth.io/*', 'https://dev.pulse.sleuth.io/*']
 
-const withTrailingSlash = (url) => url.replace(/\/*$/, '/')
+export const withTrailingSlash = (url) => url.replace(/\/*$/, '/')
+
+// The runtime scripts a manifest references (background + content scripts). Both the build (what to
+// copy) and the Chrome pack (what to zip) derive their file list from this single source of truth,
+// so adding or renaming a script can't silently ship a manifest that points at a missing file.
+export function runtimeFilesFromManifest(manifest) {
+  const files = new Set()
+  const bg = manifest.background || {}
+  if (bg.service_worker) files.add(bg.service_worker)
+  for (const s of bg.scripts || []) files.add(s)
+  for (const cs of manifest.content_scripts || []) for (const j of cs.js || []) files.add(j)
+  return [...files]
+}
 
 // Apply the per-target, per-environment tweaks to a parsed manifest and return a new object
 // (the input is left untouched). `updateBaseUrl` is where the stable pointer files are published.

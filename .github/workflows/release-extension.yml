@@ -71,6 +71,9 @@ jobs:
         working-directory: extension
         env:
           AISCAN_BUILD_ENV: prod
+          # Optional guard: if set, the pack fails when the signing key yields a different extension
+          # id (a wrong CHROME_SIGNING_KEY would silently break auto-update for managed browsers).
+          AISCAN_EXPECTED_APP_ID: ${{ vars.CHROME_EXTENSION_ID }}
         run: npm run pack:chrome
 
       - name: Create GitHub Release

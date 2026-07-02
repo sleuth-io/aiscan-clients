@@ -11,10 +11,10 @@
 //   dev  (default) — keeps the local dev host, omits auto-update fields; loadable unpacked.
 //   prod           — strips dev-only hosts and wires self-hosted auto-update (used by CI release).
 
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { transformManifest } from './lib.mjs'
+import { runtimeFilesFromManifest, transformManifest } from './lib.mjs'
 
 const target = process.argv[2]
 if (!['firefox', 'chrome'].includes(target)) {
@@ -27,10 +27,6 @@ const isProd = process.env.AISCAN_BUILD_ENV === 'prod'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = join(root, 'dist', target)
 
-// The whole runtime is manifest + these two scripts (see SPIKE.md). Everything else in the
-// directory is tests, packaging, or docs and must NOT ship in the extension.
-const RUNTIME_FILES = ['background.js', 'content.js']
-
 // Where the stable pointer files (Chrome update manifest / Firefox updates.json) are published.
 const updateBaseUrl = process.env.AISCAN_UPDATE_BASE_URL || 'https://sleuth-io.github.io/aiscan-clients/'
 
@@ -40,7 +36,17 @@ await mkdir(outDir, { recursive: true })
 const source = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'))
 const manifest = transformManifest(source, { target, isProd, updateBaseUrl })
 
+// Stage exactly the scripts the manifest declares — fail loudly if one is missing rather than
+// shipping an extension whose manifest points at an absent file.
+const runtimeFiles = runtimeFilesFromManifest(source)
+for (const f of runtimeFiles) {
+  await access(join(root, f)).catch(() => {
+    console.error(`manifest references "${f}" but it does not exist`)
+    process.exit(1)
+  })
+}
+
 await writeFile(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n')
-for (const f of RUNTIME_FILES) await copyFile(join(root, f), join(outDir, f))
+for (const f of runtimeFiles) await copyFile(join(root, f), join(outDir, f))
 
 console.log(`built ${target} (${isProd ? 'prod' : 'dev'}) → dist/${target}/ (v${manifest.version})`)

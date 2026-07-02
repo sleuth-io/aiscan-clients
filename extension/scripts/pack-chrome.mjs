@@ -8,11 +8,12 @@
 // different extension (new ID) and won't update — so it is gitignored and must be kept safe.
 
 import { generateKeyPairSync } from 'node:crypto'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import crx3 from 'crx3'
+import { runtimeFilesFromManifest, withTrailingSlash } from './lib.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const keyPath = process.env.CHROME_EXT_KEY || join(root, 'chrome-key.pem')
@@ -48,8 +49,8 @@ const version = manifest.version
 
 // Two URLs: the update manifest lives at a STABLE location (Pages) that IT bakes into policy
 // once; the CRX itself is a Release asset served from the stable `latest/download` URL.
-const updateBase = (process.env.AISCAN_UPDATE_BASE_URL || 'https://sleuth-io.github.io/aiscan-clients/').replace(/\/*$/, '/')
-const releaseBase = (process.env.AISCAN_RELEASE_BASE_URL || 'https://github.com/sleuth-io/aiscan-clients/releases/latest/download/').replace(/\/*$/, '/')
+const updateBase = withTrailingSlash(process.env.AISCAN_UPDATE_BASE_URL || 'https://sleuth-io.github.io/aiscan-clients/')
+const releaseBase = withTrailingSlash(process.env.AISCAN_RELEASE_BASE_URL || 'https://github.com/sleuth-io/aiscan-clients/releases/latest/download/')
 
 const artifacts = join(root, 'dist', 'artifacts')
 await mkdir(artifacts, { recursive: true })
@@ -59,14 +60,23 @@ const crxPath = join(artifacts, 'aiscan.crx')
 const xmlPath = join(artifacts, 'update_manifest.xml')
 const crxURL = `${releaseBase}aiscan.crx`
 
-// crx3 zips the given files, stripping their common path so entries sit at the archive root.
-const files = readdirSync(srcDir).map((f) => join(srcDir, f))
+// Zip exactly the manifest + the scripts it declares (not whatever happens to sit in dist/chrome).
+const files = ['manifest.json', ...runtimeFilesFromManifest(manifest)].map((f) => join(srcDir, f))
 
 await crx3(files, { keyPath, crxPath, xmlPath, crxURL, appVersion: version })
 
 // The extension ID is derived from the key; crx3 writes it into the update manifest as `appid`.
 const xml = await readFile(xmlPath, 'utf8')
 const appId = xml.match(/appid="([a-p]+)"/)?.[1] ?? '(see update_manifest.xml)'
+
+// Guard against a wrong signing key: a mismatched key silently yields a NEW extension ID, which
+// breaks auto-update for already-installed managed browsers. When the expected id is configured
+// (release workflow), fail loudly instead.
+const expectedId = process.env.AISCAN_EXPECTED_APP_ID
+if (expectedId && expectedId !== appId) {
+  console.error(`extension id mismatch: packed ${appId}, expected ${expectedId} — wrong signing key?`)
+  process.exit(1)
+}
 
 console.log(
   `\nCRX packed (v${version}):\n` +

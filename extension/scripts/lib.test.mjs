@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { buildFirefoxUpdates, DEV_ONLY_HOST_PATTERNS, transformManifest } from './lib.mjs'
+import {
+  buildFirefoxUpdates,
+  DEV_ONLY_HOST_PATTERNS,
+  runtimeFilesFromManifest,
+  transformManifest,
+  withTrailingSlash,
+} from './lib.mjs'
 
 const FIXTURE = {
   name: 'Test',
@@ -84,6 +90,24 @@ test('buildFirefoxUpdates normalizes the release base trailing slash', () => {
   assert.equal(u.addons['a@b'].updates[0].update_link, 'https://r.test/dl/aiscan.xpi')
 })
 
+test('withTrailingSlash adds exactly one trailing slash', () => {
+  assert.equal(withTrailingSlash('https://x.test/a'), 'https://x.test/a/')
+  assert.equal(withTrailingSlash('https://x.test/a/'), 'https://x.test/a/')
+  assert.equal(withTrailingSlash('https://x.test/a///'), 'https://x.test/a/')
+})
+
+test('runtimeFilesFromManifest collects background + content scripts, deduped', () => {
+  const files = runtimeFilesFromManifest({
+    background: { service_worker: 'background.js', scripts: ['background.js'] },
+    content_scripts: [{ js: ['content.js'] }, { js: ['content.js', 'extra.js'] }],
+  })
+  assert.deepEqual(files, ['background.js', 'content.js', 'extra.js'])
+})
+
+test('runtimeFilesFromManifest tolerates a manifest with no scripts', () => {
+  assert.deepEqual(runtimeFilesFromManifest({}), [])
+})
+
 // The real manifest must carry what packaging relies on, or a release would silently misbuild.
 test('manifest.json carries the invariants packaging depends on', () => {
   const root = dirname(dirname(fileURLToPath(import.meta.url)))
@@ -91,4 +115,6 @@ test('manifest.json carries the invariants packaging depends on', () => {
   assert.ok(m.browser_specific_settings?.gecko?.id, 'gecko.id must be set for Firefox signing')
   // Prod stripping is only meaningful if the dev hosts are present in source.
   for (const h of DEV_ONLY_HOST_PATTERNS) assert.ok(m.host_permissions.includes(h), `${h} present in source`)
+  // Every script the manifest declares must actually exist, or the build would fail.
+  for (const f of runtimeFilesFromManifest(m)) assert.ok(existsSync(join(root, f)), `${f} exists`)
 })

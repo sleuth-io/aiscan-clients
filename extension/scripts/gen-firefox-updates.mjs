@@ -10,7 +10,7 @@ import { readdirSync } from 'node:fs'
 import { copyFile, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildFirefoxUpdates } from './lib.mjs'
+import { buildFirefoxUpdates, withTrailingSlash } from './lib.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = join(root, 'dist', 'artifacts')
@@ -23,7 +23,7 @@ if (!addonId) {
   process.exit(1)
 }
 
-const releaseBase = (process.env.AISCAN_RELEASE_BASE_URL || 'https://github.com/sleuth-io/aiscan-clients/releases/latest/download/').replace(/\/*$/, '/')
+const releaseBase = withTrailingSlash(process.env.AISCAN_RELEASE_BASE_URL || 'https://github.com/sleuth-io/aiscan-clients/releases/latest/download/')
 
 // web-ext writes the signed file into dist/artifacts as <name>-<version>.xpi; grab the newest xpi
 // that isn't our own normalized output.

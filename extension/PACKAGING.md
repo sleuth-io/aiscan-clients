@@ -93,6 +93,9 @@ extension ID + the exact policy string IT needs:
 - Repo secrets:
   - `CHROME_SIGNING_KEY` — base64 of your `keygen:chrome` key (`base64 -w0 chrome-key.pem`).
   - `AMO_JWT_ISSUER` / `AMO_JWT_SECRET` — addons.mozilla.org API credentials.
+- Repo **variable** (optional but recommended): `CHROME_EXTENSION_ID` — the extension id printed by
+  `pack:chrome`. When set, a release aborts if the signing key ever produces a different id (a wrong
+  `CHROME_SIGNING_KEY` would otherwise silently ship a new id and break auto-update).
 
 ## Environment variables
 
@@ -102,4 +105,5 @@ extension ID + the exact policy string IT needs:
 | `AISCAN_UPDATE_BASE_URL` | build + chrome pack | `https://sleuth-io.github.io/aiscan-clients/` |
 | `AISCAN_RELEASE_BASE_URL` | chrome + firefox pack | `https://github.com/sleuth-io/aiscan-clients/releases/latest/download/` |
 | `CHROME_EXT_KEY` | chrome pack/keygen | `./chrome-key.pem` |
+| `AISCAN_EXPECTED_APP_ID` | chrome pack | — (optional id guard) |
 | `WEB_EXT_API_KEY` / `WEB_EXT_API_SECRET` | firefox sign | — (required) |
