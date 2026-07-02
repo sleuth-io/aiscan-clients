@@ -15,11 +15,15 @@ import (
 	"fyne.io/systray"
 )
 
-// icon.png is a black-with-alpha template glyph; macOS recolors it to match
-// the menu bar theme (SetTemplateIcon), other platforms use it as-is.
+// The Sleuth mark, twice: icon.png is black-with-alpha, the macOS *template*
+// form the menu bar recolors to match its theme; icon_light.png is white, for
+// Linux/Windows trays which use the bitmap as-is and are almost always dark.
 //
 //go:embed icon.png
-var iconPNG []byte
+var iconTemplatePNG []byte
+
+//go:embed icon_light.png
+var iconLightPNG []byte
 
 // State is one renderable snapshot of the agent. The zero value means
 // "starting up, not logged in".
@@ -49,7 +53,7 @@ func Run(a Actions, states <-chan State, version string) {
 }
 
 func onReady(a Actions, states <-chan State, version string) {
-	systray.SetTemplateIcon(iconPNG, iconPNG)
+	systray.SetTemplateIcon(iconTemplatePNG, iconLightPNG)
 	systray.SetTooltip("aiscan")
 
 	// Two disabled lines carry the status; everything below them acts.
@@ -59,7 +63,7 @@ func onReady(a Actions, states <-chan State, version string) {
 	status.Disable()
 	systray.AddSeparator()
 	syncNow := systray.AddMenuItem("Sync now", "Capture, redact, and upload now")
-	pause := systray.AddMenuItem("Pause syncing", "Skip scheduled syncs until resumed")
+	pause := systray.AddMenuItem("Pause automatic sync", "Skip the hourly scheduled syncs until resumed")
 	systray.AddSeparator()
 	login := systray.AddMenuItem("Log in…", "Authorize this machine in your browser")
 	logout := systray.AddMenuItem("Log out", "Forget this machine's authorization")
@@ -113,9 +117,9 @@ func render(st State, account, status, syncNow, pause, login, logout *systray.Me
 		syncNow.Enable()
 	}
 	if st.Paused {
-		pause.SetTitle("Resume syncing")
+		pause.SetTitle("Resume automatic sync")
 	} else {
-		pause.SetTitle("Pause syncing")
+		pause.SetTitle("Pause automatic sync")
 	}
 }
 
@@ -126,7 +130,7 @@ func statusLine(st State) string {
 	case st.Syncing:
 		return "Syncing…"
 	case st.Paused:
-		return "Paused"
+		return "Automatic sync paused"
 	case st.LastErr != "":
 		return "Problem: " + st.LastErr
 	case st.Username == "":
