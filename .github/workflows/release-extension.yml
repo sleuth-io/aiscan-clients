@@ -27,9 +27,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: lts/*
 
@@ -55,7 +55,17 @@ jobs:
 
       - name: Write Chrome signing key
         if: steps.gate.outputs.exists == 'false'
-        run: echo "${{ secrets.CHROME_SIGNING_KEY }}" | base64 -d > extension/chrome-key.pem
+        env:
+          CHROME_SIGNING_KEY: ${{ secrets.CHROME_SIGNING_KEY }}
+        run: |
+          if ! printf '%s' "$CHROME_SIGNING_KEY" | base64 -d > extension/chrome-key.pem 2>/dev/null; then
+            echo "::error::CHROME_SIGNING_KEY is not valid base64. Re-set it with: base64 -w0 chrome-key.pem | gh secret set CHROME_SIGNING_KEY"
+            exit 1
+          fi
+          if ! grep -q "BEGIN PRIVATE KEY" extension/chrome-key.pem; then
+            echo "::error::CHROME_SIGNING_KEY decoded but is not a PEM private key."
+            exit 1
+          fi
 
       - name: Package Firefox (signed XPI + updates.json)
         if: steps.gate.outputs.exists == 'false'
@@ -78,7 +88,7 @@ jobs:
 
       - name: Create GitHub Release
         if: steps.gate.outputs.exists == 'false'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.ver.outputs.version }}
           name: v${{ steps.ver.outputs.version }}
@@ -97,11 +107,11 @@ jobs:
 
       - name: Upload Pages artifact
         if: steps.gate.outputs.exists == 'false'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
       - name: Deploy to Pages
         id: deploy
         if: steps.gate.outputs.exists == 'false'
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
