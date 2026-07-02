@@ -56,11 +56,14 @@ func onReady(a Actions, states <-chan State, version string) {
 	systray.SetTemplateIcon(iconTemplatePNG, iconLightPNG)
 	systray.SetTooltip("aiscan")
 
-	// Two disabled lines carry the status; everything below them acts.
-	account := systray.AddMenuItem("Not logged in", "")
+	// Up to two disabled lines carry the status: who (always), and what's
+	// happening (only when there is something to say — when logged out the
+	// account line plus the "Log in…" action already tell the whole story).
+	account := systray.AddMenuItem("Starting…", "")
 	account.Disable()
-	status := systray.AddMenuItem("Starting…", "")
+	status := systray.AddMenuItem("", "")
 	status.Disable()
+	status.Hide()
 	systray.AddSeparator()
 	syncNow := systray.AddMenuItem("Sync now", "Capture, redact, and upload now")
 	pause := systray.AddMenuItem("Pause automatic sync", "Skip the hourly scheduled syncs until resumed")
@@ -109,9 +112,16 @@ func render(st State, account, status, syncNow, pause, login, logout *systray.Me
 		logout.Hide()
 	}
 
-	status.SetTitle(statusLine(st))
+	if line := statusLine(st); line != "" {
+		status.SetTitle(line)
+		status.Show()
+	} else {
+		status.Hide()
+	}
 
-	if st.Syncing {
+	// Sync now is pointless while logged out (a pass would just skip) and
+	// unavailable mid-sync.
+	if st.Syncing || st.Username == "" {
 		syncNow.Disable()
 	} else {
 		syncNow.Enable()
@@ -124,17 +134,18 @@ func render(st State, account, status, syncNow, pause, login, logout *systray.Me
 }
 
 // statusLine is the one-line summary under the account line, in priority
-// order: activity beats pause beats errors beats history.
+// order: activity beats errors beats pause beats history. Empty means the
+// line has nothing to add (logged out, no trouble) and is hidden.
 func statusLine(st State) string {
 	switch {
 	case st.Syncing:
 		return "Syncing…"
-	case st.Paused:
-		return "Automatic sync paused"
 	case st.LastErr != "":
 		return "Problem: " + st.LastErr
 	case st.Username == "":
-		return "Log in to start syncing"
+		return ""
+	case st.Paused:
+		return "Automatic sync paused"
 	case st.LastSync.IsZero():
 		return "Waiting for first sync"
 	default:
