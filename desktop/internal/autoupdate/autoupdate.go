@@ -195,20 +195,28 @@ func ClearPendingUpdate() {
 // command the user actually ran.
 func CheckAndUpdateInBackground() {
 	go func() {
-		_ = checkAndUpdate()
+		_, _ = checkAndUpdate()
 	}()
+}
+
+// Check runs the throttled update check synchronously and reports whether a
+// new binary was swapped into place. The daemon calls this on a ticker; a true
+// result means the on-disk binary is newer than the running image, so the
+// caller should restart (Reexec) at its next idle point to adopt it.
+func Check() (updated bool, err error) {
+	return checkAndUpdate()
 }
 
 // checkAndUpdate is phase 1: detect the latest release, write the marker,
 // then attempt the swap inline. If the process exits mid-download the marker
-// survives for ApplyPendingUpdate.
-func checkAndUpdate() error {
+// survives for ApplyPendingUpdate. Returns whether the swap completed.
+func checkAndUpdate() (bool, error) {
 	if Disabled() || isDevBuild() {
-		return nil
+		return false, nil
 	}
 
 	if !shouldCheck() {
-		return nil
+		return false, nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
@@ -216,17 +224,17 @@ func checkAndUpdate() error {
 
 	updater, err := NewUpdater()
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	release, found, err := updater.DetectLatest(ctx, Repository())
 	if err != nil {
 		// Leave the timestamp untouched so the next run retries.
-		return err
+		return false, err
 	}
 	if !found || release.LessOrEqual(buildinfo.Version) {
 		_ = updateCheckTimestamp()
-		return nil
+		return false, nil
 	}
 
 	// Marker first: the goroutine rarely outlives the user's command, and
@@ -239,11 +247,11 @@ func checkAndUpdate() error {
 
 	if err := updater.UpdateTo(ctx, release, ""); err != nil {
 		// Marker remains for phase 2 to retry.
-		return err
+		return false, err
 	}
 
 	ClearPendingUpdate()
-	return nil
+	return true, nil
 }
 
 func writePendingUpdate(release *selfupdate.Release) error {

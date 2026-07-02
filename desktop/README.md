@@ -22,17 +22,61 @@ It does **not** parse, normalize, analyze, or build reports — that is the serv
 - `aiscan update` — update to the latest release (`--check` to only look).
 - `aiscan daemon` — resident agent with the system tray (`--no-tray` for headless).
 
+All verbs accept `--instance URL`; the `AISCAN_INSTANCE` environment variable changes the
+default (useful in the daemon's LaunchAgent plist to point one machine at a test server).
+
+## The daemon and the tray
+
+`aiscan daemon` syncs on an interval (default hourly, `--interval`) and renders its state in
+the system tray — the trust surface: who is logged in, when the last sync ran, and direct
+controls (**Sync now**, **Pause**, **Log in/out**, **Quit**). Scheduled syncs never prompt: no
+cached token simply means "Log in to start syncing" in the menu. Logging in opens the browser
+device-code approval; the username shown comes from the server's whoami endpoint, which doubles
+as the token-validity probe.
+
+The daemon logs to `~/Library/Logs/aiscan/daemon.log` on macOS (elsewhere:
+`<user-cache>/aiscan/logs/daemon.log`) — the first place to look when a machine "isn't
+syncing". A file lock guarantees a single instance; a second launch just says so and exits.
+
+## macOS app (the pilot install)
+
+`Aiscan.dmg` (a release asset on `desktop-v*` releases) wraps the same binary in a menu-bar-only
+app bundle (`LSUIElement`). A double-click with no argv runs the daemon. Install flow:
+
+1. Open the dmg, drag **Aiscan** to **Applications** (the drag is required: a quarantined app
+   run in place is App-Translocated to a read-only path — the daemon detects this and asks the
+   user to move it rather than half-working).
+2. First launch is blocked by Gatekeeper (the pilot is ad-hoc signed, no Apple Developer
+   account): the dialog only offers *Done* / *Move to Trash*. Open **System Settings → Privacy
+   & Security**, scroll down, click **"Open Anyway"**, and launch again. One-time.
+3. Success looks like: nothing opens, but the aiscan bars icon appears in the menu bar.
+
+On first launch from `/Applications` the daemon installs a LaunchAgent
+(`~/Library/LaunchAgents/io.sleuth.aiscan.plist`): `RunAtLoad` starts it at login and
+`KeepAlive` with `SuccessfulExit=false` relaunches it only after a crash — a clean **Quit**
+from the tray sticks until the next login or app launch.
+
+**Uninstall:** Quit from the tray, `launchctl bootout gui/$UID/io.sleuth.aiscan` (or just
+delete the plist), and trash `/Applications/Aiscan.app`.
+
 ## Self-update
 
 Releases are GitHub Releases tagged `desktop-vX.Y.Z` (every client in this repo prefixes its
 tags; the browser extension uses `extension-v*`), published by
-`.github/workflows/release-desktop.yml`.
+`.github/workflows/release-desktop.yml`. The darwin binaries are built on a macOS runner (the
+tray needs Cgo/Cocoa there) and the app bundle ships the identical binary the tarball carries,
+so a self-update binary swap inside `Aiscan.app` never loses the tray. The dmg is deliberately
+named without `<os>_<arch>` tokens so go-selfupdate always picks the tarball.
 
 On any run, at most once per day, the client checks for a newer release in the background and
 swaps the binary in place — sha256-verified against the release's `checksums.txt`. Because the
 process usually exits before the download finishes, a pending-update marker is written first and
 the next run applies it, then re-execs so it already runs the new version (two-phase, ported
 from the sx CLI).
+
+The resident daemon re-runs the same throttled check on a ticker and, after a successful swap,
+re-execs itself at the next idle point to adopt the new binary — the OS supervisor is only for
+crash recovery, not update adoption.
 
 - `AISCAN_DISABLE_AUTOUPDATER=1` turns the background updater off; `aiscan update` still works.
 - Dev builds (version `dev` or `-dirty`) never self-update.
@@ -43,14 +87,16 @@ from the sx CLI).
 
 - Module: `github.com/sleuth-io/aiscan-clients/desktop` (Go 1.24).
 - The capture/upload core is pure Go (`CGO_ENABLED=0`). Only the tray pulls in Cgo on macOS
-  (Cocoa); it is pure-Go on Windows/Linux. Build the tray binary on a macOS runner.
-- Self-update uses GitHub releases + atomic binary swap (see above). When the daemon lands, as a
-  long-running agent it must **restart itself** to adopt an update (exit at idle → relaunched by
-  the OS supervisor: launchd `KeepAlive` on macOS).
+  (Cocoa, via fyne.io/systray); it is pure-Go on Windows/Linux — which is why darwin release
+  binaries are built on a macOS runner while linux/windows cross-compile from ubuntu.
+- Self-update uses GitHub releases + atomic binary swap (see above). The long-running daemon
+  adopts an update by **re-execing itself at an idle point**; launchd `KeepAlive`
+  (`SuccessfulExit=false`) exists only to restart it after a crash.
 
 ## Layout
 
 ```
-cmd/aiscan/      entry point
-internal/        capture, redaction, upload, autoupdate; tray (to be built)
+cmd/aiscan/       entry point
+internal/         capture, redaction, upload, autoupdate, auth, cli (verbs + daemon agent), tray
+packaging/macos/  Info.plist + make-dmg.sh (app bundle, ad-hoc signed, dmg)
 ```

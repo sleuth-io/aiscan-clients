@@ -3,6 +3,7 @@ module github.com/sleuth-io/aiscan-clients/desktop
 go 1.24.11
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/creativeprojects/go-selfupdate v1.5.2
 	golang.org/x/sys v0.39.0
@@ -15,6 +16,7 @@ require (
 	github.com/davidmz/go-pageant v1.0.2 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-fed/httpsig v1.1.0 // indirect
+	github.com/godbus/dbus/v5 v5.2.0 // indirect
 	github.com/google/go-github/v74 v74.0.0 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect

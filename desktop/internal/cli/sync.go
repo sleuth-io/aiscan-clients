@@ -31,13 +31,14 @@ import (
 // never sent over the wire.
 func Sync(args []string) error {
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
-	instance := fs.String("instance", defaultInstance, "aiscan instance URL to sync with")
+	instance := fs.String("instance", defaultInstance(), "aiscan instance URL to sync with")
 	source := fs.String("source", "", "only sync these comma-separated sources (e.g. claude-cowork); empty = all")
 	windowDays := fs.Int("window-days", 0, "only sync data from within the last N days (0 = no limit)")
 	fs.IntVar(windowDays, "w", 0, "alias for --window-days")
 	untilDays := fs.Int("until-days", 0, "only sync data modified more than N days ago (0 = up to now)")
 	fs.IntVar(untilDays, "u", 0, "alias for --until-days")
 	ignore := fs.String("ignore", "", "comma-separated path substrings to skip (e.g. a noisy project)")
+	force := fs.Bool("force", false, "full sync: re-upload all available data, ignoring what the server already has")
 	noUpload := fs.Bool("no-upload", false, "capture only: collect, redact, and summarize without uploading")
 	noRedact := fs.Bool("no-redact", false, "skip secret redaction (debug; forces --no-upload)")
 	showRedactions := fs.Bool("show-redactions", false, "debug: print every redacted match")
@@ -51,11 +52,12 @@ func Sync(args []string) error {
 		fmt.Fprintln(os.Stderr, "  "+accent("aiscan sync [flags]"))
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, header("Flags:"))
-		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--instance URL", 21)), "aiscan instance to sync with (default "+defaultInstance+")")
+		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--instance URL", 21)), "aiscan instance to sync with (default "+defaultInstance()+")")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--source LIST", 21)), "only sync these comma-separated sources (e.g. "+knownSourceList(recipes)+"); empty = all")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("-w, --window-days N", 21)), "only sync data from within the last N days (0 = no limit)")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("-u, --until-days N", 21)), "only sync data modified more than N days ago (0 = up to now)")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--ignore LIST", 21)), "comma-separated path substrings to skip (e.g. a noisy project)")
+		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--force", 21)), "full sync: re-upload all available data, ignoring what the server already has")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--no-upload", 21)), "capture only: collect, redact, and summarize without uploading")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--no-redact", 21)), "skip secret redaction (debug; forces --no-upload)")
 		fmt.Fprintf(os.Stderr, "  %s %s\n", accent(rpad("--show-redactions", 21)), "debug: print every redacted match (shows the matched secret values)")
@@ -111,7 +113,7 @@ func Sync(args []string) error {
 		return captureRun{noRedact: *noRedact, showRedactions: *showRedactions}.process(os.Stdout, arts)
 	}
 
-	cfg := syncConfig{instance: *instance, ignore: ignoreList, showRedactions: *showRedactions}
+	cfg := syncConfig{instance: *instance, ignore: ignoreList, showRedactions: *showRedactions, force: *force}
 	if *windowDays > 0 {
 		cfg.windowSince = time.Now().UTC().AddDate(0, 0, -*windowDays)
 	}
@@ -144,6 +146,10 @@ type syncConfig struct {
 	showRedactions bool
 	windowSince    time.Time // clamp available-span start (zero = earliest data)
 	windowUntil    time.Time // clamp available-span end (zero = now)
+	// force skips the server sync-plan and re-uploads the whole available span,
+	// backfilling anything a past partial or failed sync left the server
+	// missing. Safe because ingest is idempotent and dedups by session id.
+	force bool
 }
 
 // syncSource runs the discover → plan → upload loop for one source. A source not
@@ -178,13 +184,24 @@ func syncSource(ctx context.Context, cfg syncConfig, token *string, r capture.Re
 	}
 	fmt.Fprintf(w, "%s %s — available %s\n", header("sync:"), header(string(r.ID)), accent(formatSpan(available)))
 
-	needed, err := planWithRetry(ctx, cfg.instance, token, string(r.ID), prompt, []syncplan.Span{available})
-	if err != nil {
-		return fmt.Errorf("plan %s: %w", r.ID, err)
-	}
-	if len(needed) == 0 {
-		fmt.Fprintf(w, "  %s up to date (no spans needed)\n", dim("·"))
-		return nil
+	var needed []syncplan.Span
+	if cfg.force {
+		// Full sync: ignore the server's coverage and re-upload the entire
+		// available span. Ingest is idempotent and dedups by session id at
+		// report time, so this backfills whatever a past partial or failed sync
+		// left missing without duplicating what the server already has.
+		needed = []syncplan.Span{available}
+		fmt.Fprintf(w, "  %s re-uploading all available data (ignoring server coverage)\n", warn("full sync:"))
+	} else {
+		var perr error
+		needed, perr = planWithRetry(ctx, cfg.instance, token, string(r.ID), prompt, []syncplan.Span{available})
+		if perr != nil {
+			return fmt.Errorf("plan %s: %w", r.ID, perr)
+		}
+		if len(needed) == 0 {
+			fmt.Fprintf(w, "  %s up to date (no spans needed)\n", dim("·"))
+			return nil
+		}
 	}
 
 	for _, span := range needed {
@@ -222,23 +239,83 @@ func syncSpan(ctx context.Context, cfg syncConfig, token *string, r capture.Reci
 		return nil
 	}
 
-	batches, err := upload.SplitForUpload(redacted, upload.MaxCompressedBytes)
+	uploaded, err := uploadArtifacts(ctx, cfg, token, r, span, redacted, upload.MaxCompressedBytes, prompt, w)
 	if err != nil {
-		return fmt.Errorf("pack %s: %w", r.ID, err)
+		return err
 	}
-	for i, batch := range batches {
-		res, err := uploadEvidence(ctx, cfg.instance, token, r.ID, span, batch.Body, len(batch.Artifacts), prompt)
-		if err != nil {
-			return err
-		}
-		part := ""
-		if len(batches) > 1 {
-			part = fmt.Sprintf(" (part %d/%d)", i+1, len(batches))
-		}
-		fmt.Fprintf(w, "  %s %s — %s sessions%s → %s\n",
-			success("synced"), dim(formatSpan(span)), bold(fmt.Sprintf("%d", len(batch.Artifacts))), part, evidenceLabel(res))
+	// Nothing landed — every session in this window was skipped as too large.
+	// Deliberately do NOT post an empty body: an empty window still *covers* its
+	// range (docs/upload-schema-v1.md), so marking it here would record the span
+	// as done and bury the skipped sessions for good. Leave it uncovered so a
+	// later sync retries it once the server cap rises or the file shrinks; the
+	// skip warnings above already surfaced what was dropped and why.
+	if uploaded == 0 {
+		fmt.Fprintf(w, "  %s %s — nothing uploaded (all sessions too large); left for a later retry\n",
+			warn("incomplete:"), dim(formatSpan(span)))
 	}
 	return nil
+}
+
+// uploadArtifacts uploads arts as evidence for span, packing them into batches
+// that each fit maxCompressed. It skips — with a warning — any single session
+// whose own compressed body exceeds the cap, rather than POST a body the server
+// is bound to reject. If the server still answers 413 (a proxy or a server cap
+// below our estimate), it re-splits the offending batch under half the rejected
+// size and retries; a lone session the server rejects is skipped too, so one
+// oversized file can't fail the whole sync. It returns the count of sessions
+// actually uploaded.
+func uploadArtifacts(ctx context.Context, cfg syncConfig, token *string, r capture.Recipe, span syncplan.Span, arts []capture.Artifact, maxCompressed int, prompt auth.Prompt, w io.Writer) (int, error) {
+	batches, oversized, err := upload.SplitForUpload(arts, maxCompressed)
+	if err != nil {
+		return 0, fmt.Errorf("pack %s: %w", r.ID, err)
+	}
+	for _, a := range oversized {
+		fmt.Fprintf(w, "  %s %s — %s, over the %s upload cap; skipped\n",
+			warn("skipped"), dim(a.Path), humanBytes(len(a.Data)), humanBytes(maxCompressed))
+	}
+
+	uploaded := 0
+	for _, batch := range batches {
+		res, err := uploadEvidence(ctx, cfg.instance, token, r.ID, span, batch.Body, len(batch.Artifacts), prompt)
+		if errors.Is(err, upload.ErrPayloadTooLarge) {
+			if len(batch.Artifacts) == 1 {
+				fmt.Fprintf(w, "  %s %s — %s, rejected as too large by the server; skipped\n",
+					warn("skipped"), dim(batch.Artifacts[0].Path), humanBytes(len(batch.Artifacts[0].Data)))
+				continue
+			}
+			// The server's real limit is below our cap; re-split this batch
+			// under half of what it just rejected (guaranteeing progress) and
+			// retry the pieces.
+			n, rerr := uploadArtifacts(ctx, cfg, token, r, span, batch.Artifacts, len(batch.Body)/2, prompt, w)
+			if rerr != nil {
+				return uploaded, rerr
+			}
+			uploaded += n
+			continue
+		}
+		if err != nil {
+			return uploaded, err
+		}
+		uploaded += len(batch.Artifacts)
+		fmt.Fprintf(w, "  %s %s — %s sessions → %s\n",
+			success("synced"), dim(formatSpan(span)), bold(fmt.Sprintf("%d", len(batch.Artifacts))), evidenceLabel(res))
+	}
+	return uploaded, nil
+}
+
+// humanBytes renders a byte count as a compact human-readable size (e.g. 45 MiB)
+// for the size notes in skip warnings.
+func humanBytes(n int) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := int64(n) / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // planWithRetry calls aiscanSyncPlan, re-authorizing once if the server rejects
@@ -284,10 +361,20 @@ func uploadEvidence(ctx context.Context, instance string, token *string, id capt
 	return res, nil
 }
 
+// errAuthRequired means the server rejected the token and the caller is
+// non-interactive (daemon), so re-running the device flow — which needs a
+// human in a browser — is not an option. The stale token is already cleared.
+var errAuthRequired = errors.New("authorization required")
+
 // reauthorize clears the cached token and runs the device-code flow again,
-// returning the fresh token.
+// returning the fresh token. A nil prompt marks a non-interactive caller:
+// it fails with errAuthRequired instead of silently starting a device flow
+// nobody will approve.
 func reauthorize(ctx context.Context, instance string, prompt auth.Prompt) (string, error) {
 	_ = auth.ClearToken(instance)
+	if prompt == nil {
+		return "", errAuthRequired
+	}
 	fresh, err := auth.EnsureToken(ctx, instance, prompt)
 	if err != nil {
 		return "", fmt.Errorf("re-authorize: %w", err)

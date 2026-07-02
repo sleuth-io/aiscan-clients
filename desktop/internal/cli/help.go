@@ -20,6 +20,7 @@ func Help() string {
 	fmt.Fprintf(&b, "  %s %s\n", bold(rpad("login", 9)), "Authorize this machine (device-code OAuth)")
 	fmt.Fprintf(&b, "  %s %s\n", bold(rpad("capture", 9)), "Collect local AI usage (--out DIR, --window-days N)")
 	fmt.Fprintf(&b, "  %s %s\n", bold(rpad("sync", 9)), "Capture, redact, and upload the spans the server needs (--no-upload to inspect)")
+	fmt.Fprintf(&b, "  %s %s\n", bold(rpad("daemon", 9)), "Run the resident agent with the system tray (--no-tray for headless)")
 	fmt.Fprintf(&b, "  %s %s\n", bold(rpad("update", 9)), "Update aiscan to the latest release (--check to only look)")
 	fmt.Fprintf(&b, "  %s %s\n", bold(rpad("version", 9)), "Print version information")
 	fmt.Fprintf(&b, "  %s %s\n", bold(rpad("help", 9)), "Show this help")

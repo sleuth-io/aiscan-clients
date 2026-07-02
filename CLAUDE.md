@@ -50,8 +50,9 @@ link `releases/latest` — pin exact tags.
 - Keep capture/redact/upload/self-update **pure Go** (`CGO_ENABLED=0`). Only the system tray
   pulls in Cgo on macOS — isolate it so the rest cross-compiles cleanly.
 - **Self-update restart:** as a long-running agent, the daemon must *restart itself* to adopt a
-  new binary (swap at an idle point → exit → relaunched by the OS supervisor, e.g. launchd
-  `KeepAlive`). There is no in-place hot reload — don't design for one.
+  new binary (swap on disk → re-exec at an idle point). The OS supervisor (launchd `KeepAlive`
+  with `SuccessfulExit=false`) is crash recovery only — a clean Quit stays quit. There is no
+  in-place hot reload — don't design for one.
 
 ## extension/ — conventions
 
