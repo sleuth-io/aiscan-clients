@@ -10,7 +10,6 @@ import (
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -60,113 +59,6 @@ func TestBuildTarGz_NormalizesNamesAndContent(t *testing.T) {
 	}
 	if _, ok := got["claude-code/projects/p/s1.jsonl"]; ok {
 		t.Fatalf("source-id prefix was not stripped: %#v", got)
-	}
-}
-
-func TestUpload_PostsAndParsesRun(t *testing.T) {
-	var gotAuth, gotCT, gotSource, gotWindow, gotMethod string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
-		gotAuth = r.Header.Get("authorization")
-		gotCT = r.Header.Get("content-type")
-		gotSource = r.URL.Query().Get("source")
-		gotWindow = r.URL.Query().Get("window_days")
-		if r.URL.Path != "/api/aiscan/ingest" {
-			t.Errorf("path = %q", r.URL.Path)
-		}
-		w.Write([]byte(`{"run":"run-123"}`))
-	}))
-	defer srv.Close()
-
-	res, err := Upload(context.Background(), Params{
-		InstanceURL: srv.URL + "/", // trailing slash should be trimmed
-		Token:       "tok",
-		Source:      capture.SourceClaudeCode,
-		WindowDays:  7,
-		Artifacts:   arts(),
-	})
-	if err != nil {
-		t.Fatalf("Upload: %v", err)
-	}
-	if gotMethod != http.MethodPost {
-		t.Errorf("method = %q", gotMethod)
-	}
-	if gotAuth != "Bearer tok" {
-		t.Errorf("authorization = %q", gotAuth)
-	}
-	if gotCT != "application/gzip" {
-		t.Errorf("content-type = %q", gotCT)
-	}
-	if gotSource != "claude-code" || gotWindow != "7" {
-		t.Errorf("query source=%q window_days=%q", gotSource, gotWindow)
-	}
-	if res.RunID != "run-123" || res.ReportURL != srv.URL+"/aiscan/run-123" || res.Sessions != 2 {
-		t.Errorf("result = %#v", res)
-	}
-}
-
-// TestUpload_SendsCaptureWindow verifies the capture window derived from the
-// --window-days/--until-days flags is sent as RFC3339 captured_start/captured_end
-// query params.
-func TestUpload_SendsCaptureWindow(t *testing.T) {
-	start := time.Date(2026, 6, 1, 8, 0, 0, 0, time.UTC)
-	end := time.Date(2026, 6, 20, 8, 0, 0, 0, time.UTC)
-	var gotStart, gotEnd string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotStart = r.URL.Query().Get("captured_start")
-		gotEnd = r.URL.Query().Get("captured_end")
-		w.Write([]byte(`{"run":"r"}`))
-	}))
-	defer srv.Close()
-
-	_, err := Upload(context.Background(), Params{
-		InstanceURL:   srv.URL,
-		Token:         "tok",
-		Source:        capture.SourceClaudeCode,
-		CapturedStart: start,
-		CapturedEnd:   end,
-		Artifacts:     arts(),
-	})
-	if err != nil {
-		t.Fatalf("Upload: %v", err)
-	}
-	if gotStart != "2026-06-01T08:00:00Z" || gotEnd != "2026-06-20T08:00:00Z" {
-		t.Errorf("window start=%q end=%q", gotStart, gotEnd)
-	}
-}
-
-// TestUpload_OpenWindowDefaults verifies the default run (no --window-days /
-// --until-days, so both bounds zero) sends captured_start as the Unix epoch and
-// captured_end as ~now — i.e. "everything up to now".
-func TestUpload_OpenWindowDefaults(t *testing.T) {
-	var gotStart, gotEnd string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotStart = r.URL.Query().Get("captured_start")
-		gotEnd = r.URL.Query().Get("captured_end")
-		w.Write([]byte(`{"run":"r"}`))
-	}))
-	defer srv.Close()
-
-	// RFC3339 truncates to whole seconds, so allow a second of slack on the floor.
-	before := time.Now().UTC().Add(-time.Second)
-	_, err := Upload(context.Background(), Params{
-		InstanceURL: srv.URL,
-		Token:       "tok",
-		Source:      capture.SourceClaudeCode,
-		Artifacts:   arts(),
-	})
-	if err != nil {
-		t.Fatalf("Upload: %v", err)
-	}
-	if gotStart != "1970-01-01T00:00:00Z" {
-		t.Errorf("open start = %q, want the Unix epoch", gotStart)
-	}
-	end, err := time.Parse(time.RFC3339, gotEnd)
-	if err != nil {
-		t.Fatalf("captured_end %q not RFC3339: %v", gotEnd, err)
-	}
-	if end.Before(before) || end.After(time.Now().UTC().Add(time.Minute)) {
-		t.Errorf("open end = %q, want ~now", gotEnd)
 	}
 }
 
@@ -221,52 +113,6 @@ func TestSplitForUpload_LoneOversizedArtifact(t *testing.T) {
 	}
 	if len(batches) != 1 || len(batches[0].Artifacts) != 1 {
 		t.Fatalf("a lone oversized artifact should be returned alone, got %d batch(es)", len(batches))
-	}
-}
-
-func TestUpload_PayloadTooLarge(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusRequestEntityTooLarge)
-		w.Write([]byte("<html>413</html>"))
-	}))
-	defer srv.Close()
-
-	_, err := Upload(context.Background(), Params{InstanceURL: srv.URL, Token: "x", Source: capture.SourceClaudeCode, Artifacts: arts()})
-	if !errors.Is(err, ErrPayloadTooLarge) {
-		t.Fatalf("want ErrPayloadTooLarge, got %v", err)
-	}
-}
-
-func TestUpload_Unauthorized(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(`{"error":"invalid_token"}`))
-	}))
-	defer srv.Close()
-
-	_, err := Upload(context.Background(), Params{InstanceURL: srv.URL, Token: "x", Source: capture.SourceClaudeCode, Artifacts: arts()})
-	if !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("want ErrUnauthorized, got %v", err)
-	}
-}
-
-func TestUpload_ServerError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("boom"))
-	}))
-	defer srv.Close()
-
-	_, err := Upload(context.Background(), Params{InstanceURL: srv.URL, Token: "x", Source: capture.SourceClaudeCode, Artifacts: arts()})
-	if err == nil || !strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("want 500/boom error, got %v", err)
-	}
-}
-
-func TestUpload_NoArtifacts(t *testing.T) {
-	_, err := Upload(context.Background(), Params{InstanceURL: "http://x", Token: "t", Source: capture.SourceClaudeCode})
-	if err == nil {
-		t.Fatal("want error for empty artifacts")
 	}
 }
 
@@ -360,5 +206,22 @@ func TestUploadEvidence_Unauthorized(t *testing.T) {
 	}, nil)
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("want ErrUnauthorized, got %v", err)
+	}
+}
+
+func TestUploadEvidence_PayloadTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		w.Write([]byte("<html>413</html>"))
+	}))
+	defer srv.Close()
+
+	body, _ := buildTarGz(arts())
+	_, err := UploadEvidence(context.Background(), EvidenceParams{
+		InstanceURL: srv.URL, Token: "x", Source: capture.SourceClaudeCode,
+		CapturedStart: time.Now(), CapturedEnd: time.Now(), SchemaVersion: SchemaVersionV1,
+	}, body)
+	if !errors.Is(err, ErrPayloadTooLarge) {
+		t.Fatalf("want ErrPayloadTooLarge, got %v", err)
 	}
 }
