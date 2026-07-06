@@ -32,25 +32,14 @@ jobs:
         with:
           go-version-file: desktop/go.mod
 
-      - name: Build binaries, app bundle, dmg
-        env:
-          CGO_ENABLED: 1 # the tray needs Cocoa on macOS
+      # Go through make, not raw `go build`: the Makefile owns the CGO-on-macOS
+      # rule the tray needs, so exercising it here is what catches a regression
+      # in `make build` on mac (the direct-go-build path never would).
+      - name: Build app + dmg via make
         run: |
           set -euo pipefail
-          # Not a release: a fixed placeholder version keeps the bundle valid
-          # without inventing a tag.
-          VERSION="0.0.0-ci"
-
-          mkdir -p dist
-          for GOARCH in arm64 amd64; do
-            outdir="dist/build/darwin_${GOARCH}"
-            mkdir -p "$outdir"
-            (cd desktop && GOARCH="$GOARCH" \
-              go build -trimpath -o "../${outdir}/aiscan" ./cmd/aiscan)
-          done
-
-          # dmg wraps the arm64 binary, exactly as the release does.
-          desktop/packaging/macos/make-dmg.sh dist/build/darwin_arm64/aiscan "$VERSION" dist
+          make dmg                # host arm64: make build (Cgo) + make-dmg.sh
+          GOARCH=amd64 make build # cross-check amd64 darwin still compiles
           ls -l dist
 
       - uses: actions/upload-artifact@v4
