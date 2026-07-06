@@ -1,0 +1,60 @@
+name: CI desktop (macOS)
+
+# The macOS build path — the Cgo/Cocoa tray build plus dmg packaging
+# (sips/iconutil/codesign/hdiutil) — only runs on real macOS, which the
+# Linux-only jobs in ci.yml never exercise. Without this, the first time any
+# of it runs is a desktop-v* release tag, so a broken app bundle or dmg would
+# only surface at release. This job builds the same darwin binaries and dmg
+# the release does and uploads the dmg as an artifact (no publishing), so PRs
+# catch the breakage and reviewers can click the actual app.
+#
+# Path-filtered to desktop changes: macOS runner minutes bill ~10x Linux, and
+# extension/docs PRs don't touch this path. The workflow file itself is in the
+# filter so edits to it still trigger a run.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/ci-desktop-macos.yml'
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/ci-desktop-macos.yml'
+
+jobs:
+  package-macos:
+    name: Build macOS app + dmg
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: desktop/go.mod
+
+      - name: Build binaries, app bundle, dmg
+        env:
+          CGO_ENABLED: 1 # the tray needs Cocoa on macOS
+        run: |
+          set -euo pipefail
+          # Not a release: a fixed placeholder version keeps the bundle valid
+          # without inventing a tag.
+          VERSION="0.0.0-ci"
+
+          mkdir -p dist
+          for GOARCH in arm64 amd64; do
+            outdir="dist/build/darwin_${GOARCH}"
+            mkdir -p "$outdir"
+            (cd desktop && GOARCH="$GOARCH" \
+              go build -trimpath -o "../${outdir}/aiscan" ./cmd/aiscan)
+          done
+
+          # dmg wraps the arm64 binary, exactly as the release does.
+          desktop/packaging/macos/make-dmg.sh dist/build/darwin_arm64/aiscan "$VERSION" dist
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Aiscan-dmg
+          path: dist/Aiscan.dmg
+          if-no-files-found: error
