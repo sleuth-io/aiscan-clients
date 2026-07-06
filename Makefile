@@ -4,11 +4,17 @@
 #   extension/ WebExtension (zero-dep, Node built-in test runner)
 #
 # Capture/redact/upload stay pure Go (CGO_ENABLED=0) so they cross-compile
-# cleanly; only the macOS tray (later) pulls in Cgo. Tests need cgo for -race.
+# cleanly. The macOS tray is Cocoa, so on Darwin the build needs Cgo — building
+# with it off there fails in fyne.io/systray (undefined nativeLoop, etc.).
+# Tests need cgo for -race regardless.
 
 DESKTOP := desktop
 BINARY  := aiscan
 PREFIX  ?= $(HOME)/.local
+
+# 1 on macOS (tray needs Cocoa), 0 elsewhere (keep the binary pure/static).
+# Override on the command line if cross-compiling.
+CGO ?= $(shell [ "$$(uname)" = Darwin ] && echo 1 || echo 0)
 
 # Version metadata stamped into the binary (see internal/buildinfo). Release
 # tags are prefixed per client (desktop-vX.Y.Z); strip the prefix so the
@@ -28,10 +34,15 @@ help: ## List targets
 		awk 'BEGIN{FS=":.*?## "}{printf "  %-14s %s\n", $$1, $$2}'
 
 .PHONY: build
-build: ## Build the desktop binary into desktop/bin (pure Go)
+build: ## Build the desktop binary into desktop/bin (Cgo on macOS for the tray)
 	@echo "Building $(BINARY)..."
-	@cd $(DESKTOP) && CGO_ENABLED=0 go build $(LDFLAGS) -o bin/$(BINARY) ./cmd/aiscan
+	@cd $(DESKTOP) && CGO_ENABLED=$(CGO) go build $(LDFLAGS) -o bin/$(BINARY) ./cmd/aiscan
 	@echo "Built: $(DESKTOP)/bin/$(BINARY)"
+
+.PHONY: dmg
+dmg: build ## macOS: wrap the built binary into Aiscan.app + dist/Aiscan.dmg
+	@$(DESKTOP)/packaging/macos/make-dmg.sh $(DESKTOP)/bin/$(BINARY) $(VERSION) dist
+	@echo "Built: dist/Aiscan.dmg"
 
 .PHONY: install
 install: build ## Build and copy the desktop binary to $(PREFIX)/bin
@@ -91,7 +102,7 @@ update-deps: ## Update Go dependencies to latest and tidy
 
 .PHONY: clean
 clean: ## Remove build output
-	rm -rf $(DESKTOP)/bin
+	rm -rf $(DESKTOP)/bin dist
 
 .PHONY: prepush
 prepush: fmtcheck lint test ## Run before pushing: format check + lint + all tests
