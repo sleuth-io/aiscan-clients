@@ -26,12 +26,16 @@ Python where it's unit-tested, instead of shipping transcoders in the extension.
   JSON under its provider dir (`claude-web/<uuid>.json`, `chatgpt/<id>.json`, `gemini/<id>.json`)
   — into a **gzipped tar** (the wire format `/api/aiscan/ingest` expects), (2) gets an OAuth
   access token via the **device-code flow**
-  (well-known client `sleuth-aiscan`, cached in `chrome.storage`), and (3) POSTs the gzip to
-  `{instance}/api/aiscan/ingest?source=<claude-web|chatgpt-web|gemini-web>`. The server stores it
-  and runs the pipeline on a Celery worker; we get back a run GID and link to its report.
+  (well-known client `sleuth-aiscan`, cached in `chrome.storage`), and (3) POSTs the gzip as
+  **evidence for one span** to
+  `{instance}/api/aiscan/ingest?source=<claude-web|chatgpt-web|gemini-web>&captured_start=…&captured_end=…&schema_version=1`.
+  Following the desktop client's **v1 sync contract**, the extension first asks `aiscanSyncPlan`
+  (GraphQL) which spans the server still needs, then uploads only those — a zero-length body marks
+  a scanned-but-empty span. Each upload deposits evidence; the report is built server-side and
+  lives at the `{instance}/aiscan` index (no per-upload run GID).
 - **Inline settings panel** (in `content.js`) — the on-page **⚙** toggles a floaty popover to set
   the **instance URL** (`http://dev.pulse.sleuth.io` for local dev, `https://app.skills.new` for
-  prod), the history window, and to sign out — all without leaving claude.ai.
+  prod) and to sign out — all without leaving claude.ai.
 - There is **no popup** — the entire UI (scan button, settings ⚙, status panel) is injected on the
   claude.ai page. Clicking the toolbar icon just focuses (or opens) a claude.ai tab.
 

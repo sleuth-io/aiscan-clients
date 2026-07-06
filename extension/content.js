@@ -19,17 +19,17 @@
 
   const CONCURRENCY = 5;
   const DEFAULT_INSTANCE = "https://app.skills.new";
-  // Config (history window + Pulse instance) is edited in the inline settings
-  // panel below; this is the default until it loads from chrome.storage.
-  // windowDays scopes which conversations are sent (0 = all time). instanceUrl
-  // is read by background.js to know where to authorize and upload.
-  let cfg = { windowDays: 7, instanceUrl: DEFAULT_INSTANCE };
+  // Config (Pulse instance) is edited in the inline settings panel below; this
+  // is the default until it loads from chrome.storage. instanceUrl is read by
+  // background.js to know where to authorize and upload.
+  let cfg = { instanceUrl: DEFAULT_INSTANCE };
 
   // ---- Provider adapters -------------------------------------------------
   // claude.ai, chatgpt.com, and gemini.google.com expose different chat APIs,
-  // but the scan flow is identical: list conversations -> filter by the history
-  // window -> fetch each transcript raw -> hand the batch to the background
-  // worker. Each adapter knows only how to list and fetch on its own origin
+  // but the scan flow is identical: list conversations -> ask the server which
+  // spans it still needs -> fetch each needed transcript raw -> hand the batch
+  // to the background worker. Each adapter knows only how to list and fetch on
+  // its own origin
   // (where the page's cookies / token apply). The adapter's `name` is sent to
   // background.js so it files the upload under the right provider dir; the
   // server picks the parser from there. Detection is purely by hostname.
@@ -159,17 +159,24 @@
           headers: {
             "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
           },
-          body: "f.req=" + encodeURIComponent(freq) + "&at=" + encodeURIComponent(at),
+          body:
+            "f.req=" +
+            encodeURIComponent(freq) +
+            "&at=" +
+            encodeURIComponent(at),
         });
         if (!r.ok)
-          throw new Error(r.status + " " + r.statusText + " — batchexecute " + rpcid);
+          throw new Error(
+            r.status + " " + r.statusText + " — batchexecute " + rpcid,
+          );
         // Responses are framed as )]}' then length-delimited JSON rows; ours is
         // the "wrb.fr" row whose second field is our rpcid.
         for (const line of (await r.text()).split("\n")) {
           if (!line.startsWith("[[")) continue;
           try {
             for (const row of JSON.parse(line))
-              if (row[0] === "wrb.fr" && row[1] === rpcid) return JSON.parse(row[2]);
+              if (row[0] === "wrb.fr" && row[1] === rpcid)
+                return JSON.parse(row[2]);
           } catch (_) {}
         }
         return null;
@@ -200,16 +207,27 @@
           const ts = Array.isArray(c[5])
             ? new Date(c[5][0] * 1000).toISOString()
             : undefined;
-          return { id: c[0], title: c[1] || "", updated_at: ts, created_at: ts };
+          return {
+            id: c[0],
+            title: c[1] || "",
+            updated_at: ts,
+            created_at: ts,
+          };
         });
       },
       async fetchFull(item) {
         // hNvQHb returns the conversation's turns; upload the raw inner payload
         // and let the server parser walk the nested-array structure.
-        const payload = await this.rpc(
-          "hNvQHb",
-          [item.id, 50, null, 1, [0], [4], null, 1],
-        );
+        const payload = await this.rpc("hNvQHb", [
+          item.id,
+          50,
+          null,
+          1,
+          [0],
+          [4],
+          null,
+          1,
+        ]);
         return {
           conversation_id: item.id,
           title: item.title,
@@ -247,36 +265,27 @@
   // ---- UI: a split button (scan | ⚙) with settings + log popovers --------
   const btn = el("button", {
     text: "Scan and upload my chats",
+    title:
+      "Syncs your " +
+      provider.label +
+      " chats to aiscan — uploads only what the server still needs",
     style:
       "padding:8px 14px;background:#da7756;color:#fff;border:none;cursor:pointer;" +
       "font:13px system-ui,sans-serif;border-right:1px solid rgba(0,0,0,.18)",
   });
-  // The window scope no longer fits the label (the button reads as a plain
-  // action), so surface it in the tooltip instead — refreshed after each change.
-  function updateLabel() {
-    btn.title =
-      cfg.windowDays > 0
-        ? "Scans your " +
-          provider.label +
-          " sessions from the last " +
-          cfg.windowDays +
-          " days"
-        : "Scans all your " + provider.label + " sessions";
-  }
-  updateLabel();
 
   const gear = el("button", {
     text: "⚙",
-    title: "Sleuth AI Insights settings (instance + history window)",
+    title: "Sleuth AI Insights settings (instance)",
     style:
       "padding:8px 11px 8px 9px;background:#c4634a;color:#fff;border:none;cursor:pointer;" +
       "font:18px system-ui;line-height:1;display:flex;align-items:center",
   });
 
   // Inline settings popover — anchored above the gear so the user never leaves
-  // the page to edit the instance URL / history window or to sign out. Reads/
-  // writes the same chrome.storage.local "config" that loads below and that
-  // background.js reads on upload; "Sign out" clears the cached OAuth token.
+  // the page to edit the instance URL or to sign out. Reads/writes the same
+  // chrome.storage.local "config" that loads below and that background.js reads
+  // on upload; "Sign out" clears the cached OAuth token.
   const settings = el("div", {
     style:
       "position:fixed;z-index:2147483647;bottom:56px;right:16px;width:340px;display:none;" +
@@ -297,33 +306,6 @@
 
   // Persist immediately on every change — there is no Save button.
   const persist = () => chrome.storage.local.set({ config: cfg });
-
-  // History window — a slider over discrete stops; the last stop (0) is all time.
-  const WINDOW_STEPS = [7, 14, 30, 60, 90, 180, 0];
-  const WINDOW_TICKS = ["7d", "14d", "30d", "60d", "90d", "180d", "All"];
-  const windowText = (d) => (d > 0 ? "Last " + d + " days" : "All time");
-
-  const windowValue = el("div", {
-    style: "color:#da7756;font-weight:600;margin:-2px 0 6px",
-  });
-  const slider = el("input", {
-    type: "range",
-    min: "0",
-    max: String(WINDOW_STEPS.length - 1),
-    step: "1",
-    style: "width:100%;accent-color:#da7756;cursor:pointer;margin:0",
-  });
-  const ticks = el(
-    "div",
-    {
-      style:
-        "display:flex;justify-content:space-between;color:#9a9aa0;font-size:10px;margin-top:2px",
-    },
-    WINDOW_TICKS.map((t) => el("span", { text: t })),
-  );
-  const windowHint = mkHint(
-    "How far back to scan your " + provider.label + " sessions.",
-  );
 
   // Pulse instance — dev only. Commits on blur/Enter, not per keystroke.
   const instanceHeader = mkLabel("Pulse instance");
@@ -367,11 +349,6 @@
 
   // Compose the panel in display order, then mount it once.
   [
-    mkLabel("History window"),
-    windowValue,
-    slider,
-    ticks,
-    windowHint,
     instanceHeader,
     instanceHint,
     instanceEl,
@@ -381,13 +358,6 @@
     devToggle,
   ].forEach((n) => settings.appendChild(n));
   document.documentElement.appendChild(settings);
-
-  slider.addEventListener("input", () => {
-    cfg.windowDays = WINDOW_STEPS[parseInt(slider.value, 10)] || 0;
-    windowValue.textContent = windowText(cfg.windowDays);
-    updateLabel();
-    persist();
-  });
 
   // Commit only on blur/Enter so transient or invalid mid-edit values never
   // become the upload target. Empty falls back to the default; anything that
@@ -427,7 +397,6 @@
   });
 
   const devOnly = [
-    windowHint,
     instanceHeader,
     instanceHint,
     instanceEl,
@@ -452,9 +421,6 @@
       // Opening settings clears any previous scan log out of the popover.
       panel.style.display = "none";
       panel.textContent = "";
-      const idx = Math.max(0, WINDOW_STEPS.indexOf(cfg.windowDays));
-      slider.value = String(idx);
-      windowValue.textContent = windowText(WINDOW_STEPS[idx]);
       instanceEl.value = cfg.instanceUrl || DEFAULT_INSTANCE;
       applyDevMode();
       savedNote.textContent = "";
@@ -495,7 +461,10 @@
   async function getJSON(url, extraHeaders) {
     const r = await fetch(url, {
       credentials: "include",
-      headers: Object.assign({ accept: "application/json" }, extraHeaders || {}),
+      headers: Object.assign(
+        { accept: "application/json" },
+        extraHeaders || {},
+      ),
     });
     if (!r.ok) throw new Error(r.status + " " + r.statusText + " — " + url);
     return r.json();
@@ -543,6 +512,29 @@
   }
 
   // ---- Scan orchestration ------------------------------------------------
+  // One conversation's timestamp (last activity, falling back to creation) in
+  // ms, or NaN when the adapter couldn't date it.
+  const tsOf = (c) => Date.parse(c.updated_at || c.created_at || "");
+  // Render a span as "YYYY-MM-DD … YYYY-MM-DD" for the log lines.
+  const day = (iso) => new Date(iso).toISOString().slice(0, 10);
+  const fmtSpan = (s) => day(s.start) + " … " + day(s.end);
+
+  // Append the "Open reports" link once a sync finishes. Reports live at the
+  // instance's /aiscan index — each sync only deposits evidence; the server
+  // builds the report separately.
+  function showReportsLink(url) {
+    panel.appendChild(
+      el("a", {
+        href: url,
+        target: "_blank",
+        rel: "noopener",
+        text: "Open reports",
+        style:
+          "display:inline-block;margin-top:8px;color:#ffd9b0;font-weight:600",
+      }),
+    );
+  }
+
   async function scan() {
     // Take over the popover: drop the settings view, show a fresh log, and lock
     // the ⚙ so settings can't reopen mid-scan.
@@ -554,66 +546,87 @@
     panel.style.display = "block";
     try {
       log("Listing " + provider.label + " conversations…");
-      let list = await provider.listConversations();
-      const total = list.length;
-      log("  found " + total + " conversations");
-      if (!total) return;
-      // Keep only conversations active within the window (by last update). Every
-      // adapter normalizes its list timestamps to ISO strings here.
-      if (cfg.windowDays > 0) {
-        const cutoff = Date.now() - cfg.windowDays * 24 * 60 * 60 * 1000;
-        list = list.filter((c) => {
-          const t = Date.parse(c.updated_at || c.created_at || "");
-          return isNaN(t) || t >= cutoff;
-        });
-        log(
-          "  " +
-            list.length +
-            " of " +
-            total +
-            " active in last " +
-            cfg.windowDays +
-            " days",
-        );
-      }
+      const list = await provider.listConversations();
+      log("  found " + list.length + " conversations");
       if (!list.length) return;
 
-      log("Fetching transcripts…");
-      let done = 0;
-      const conversations = await mapLimit(list, CONCURRENCY, async (item) => {
-        const full = await provider.fetchFull(item);
-        done++;
-        if (done % 5 === 0 || done === list.length)
-          log("  " + done + "/" + list.length);
-        return full;
-      });
+      // Offer the server our whole history (earliest activity … now); it replies
+      // with just the spans it still needs, so we never re-fetch or re-upload
+      // transcripts it already has. Undatable conversations don't move the floor.
+      const times = list.map(tsOf).filter((t) => !isNaN(t));
+      const earliest = times.reduce((a, b) => Math.min(a, b), Date.now());
+      const available = [
+        {
+          start: new Date(times.length ? earliest : 0).toISOString(),
+          end: new Date().toISOString(),
+        },
+      ];
 
-      log("Uploading " + conversations.length + " conversations…");
-      const resp = await chrome.runtime.sendMessage({
-        type: "upload",
+      log("Asking the server what it still needs…");
+      const plan = await chrome.runtime.sendMessage({
+        type: "plan",
         provider: provider.name,
-        conversations,
-        windowDays: cfg.windowDays,
+        available,
       });
-      if (resp && resp.ok) {
-        log(
-          "Uploaded " +
-            resp.sessions +
-            " sessions. Analysis is running — open the report:",
-        );
-        panel.appendChild(
-          el("a", {
-            href: resp.reportUrl,
-            target: "_blank",
-            rel: "noopener",
-            text: "▶ Open report (streams live, then shows the result)",
-            style:
-              "display:inline-block;margin-top:8px;color:#ffd9b0;font-weight:600",
-          }),
-        );
-      } else {
-        log("Upload failed: " + (resp && resp.error));
+      if (!plan || !plan.ok) {
+        log("Sync plan failed: " + (plan && plan.error));
+        return;
       }
+      const needed = plan.neededSpans || [];
+      if (!needed.length) {
+        log("Already up to date — nothing to sync.");
+        showReportsLink(plan.reportsUrl);
+        return;
+      }
+      log("  " + needed.length + " span(s) to sync");
+
+      // Undated conversations can't be placed in a span; fold them into the most
+      // recent needed span so they still get uploaded exactly once.
+      const lastSpan = needed[needed.length - 1];
+      let synced = 0;
+      for (const span of needed) {
+        const s = Date.parse(span.start);
+        const e = Date.parse(span.end);
+        const inSpan = list.filter((c) => {
+          const t = tsOf(c);
+          return isNaN(t) ? span === lastSpan : t >= s && t < e;
+        });
+
+        let conversations = [];
+        if (inSpan.length) {
+          log(
+            "Syncing " +
+              fmtSpan(span) +
+              " — " +
+              inSpan.length +
+              " conversations…",
+          );
+          let done = 0;
+          conversations = await mapLimit(inSpan, CONCURRENCY, async (item) => {
+            const full = await provider.fetchFull(item);
+            done++;
+            if (done % 5 === 0 || done === inSpan.length)
+              log("  " + done + "/" + inSpan.length);
+            return full;
+          });
+        } else {
+          // No conversations in this span — an empty upload records it as
+          // scanned-and-empty so the server never asks for it again.
+          log("Syncing " + fmtSpan(span) + " — empty");
+        }
+
+        const resp = await chrome.runtime.sendMessage({
+          type: "upload",
+          provider: provider.name,
+          conversations,
+          span,
+        });
+        if (resp && resp.ok) synced += resp.sessions;
+        else log("  upload failed: " + (resp && resp.error));
+      }
+
+      log("Synced " + synced + " sessions. Open the reports page:");
+      showReportsLink(plan.reportsUrl);
     } catch (e) {
       log("ERROR: " + (e && e.message ? e.message : String(e)));
     } finally {
@@ -623,9 +636,6 @@
     }
   }
 
-  // Open the report tab synchronously on click (so the popup blocker allows it),
-  // then start the scan. The report page streams live analysis status and
-  // auto-advances to the finished report.
   btn.addEventListener("click", scan);
 
   // The background worker authorizes via the OAuth device-code flow on first
@@ -641,9 +651,8 @@
     }
   });
 
-  // Load saved config (history window + instance) written by the settings panel.
+  // Load saved config (instance) written by the settings panel.
   chrome.storage.local.get("config", (d) => {
     if (d && d.config) cfg = Object.assign(cfg, d.config);
-    updateLabel();
   });
 })();

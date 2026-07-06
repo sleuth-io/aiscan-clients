@@ -11,24 +11,37 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const zlib = require("node:zlib");
 
-const { buildTar, gzip, upload } = require("./background.js");
+const { buildTar, gzip, plan, upload } = require("./background.js");
 
 const td = new TextDecoder();
 const field = (tar, off, len) => td.decode(tar.subarray(off, off + len));
 
-// Wire up global.chrome + global.fetch for an upload() call; returns the captured
-// request and registers teardown. A cached, non-expired token skips the device flow.
-function mockEnv(t, { instanceUrl = "https://app.skills.new", runGid = "AR_1" } = {}) {
+// A default upload span; the server hands these back from the sync plan and the
+// client tags each evidence upload with the one it's fulfilling.
+const SPAN = {
+  start: "2026-06-01T00:00:00.000Z",
+  end: "2026-07-01T00:00:00.000Z",
+};
+
+// Wire up global.chrome + global.fetch for a plan()/upload() call; returns the
+// captured request and registers teardown. A cached, non-expired token skips the
+// device flow. `respond` overrides the fetch reply (e.g. a GraphQL plan body).
+function mockEnv(t, { instanceUrl = "https://app.skills.new", respond } = {}) {
   const store = {
     config: { instanceUrl },
-    auth: { instanceUrl, accessToken: "tok", expiresAt: Date.now() + 3_600_000 },
+    auth: {
+      instanceUrl,
+      accessToken: "tok",
+      expiresAt: Date.now() + 3_600_000,
+    },
   };
   const cap = {};
   global.chrome = {
     runtime: {},
     storage: {
       local: {
-        get: async (key) => (typeof key === "string" ? { [key]: store[key] } : { ...store }),
+        get: async (key) =>
+          typeof key === "string" ? { [key]: store[key] } : { ...store },
         set: async (obj) => Object.assign(store, obj),
         remove: async (key) => delete store[key],
       },
@@ -37,13 +50,18 @@ function mockEnv(t, { instanceUrl = "https://app.skills.new", runGid = "AR_1" } 
   global.fetch = async (url, opts) => {
     cap.url = url;
     cap.opts = opts;
-    return { ok: true, status: 200, text: async () => JSON.stringify({ run: runGid }) };
+    if (respond) return respond(url, opts);
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ evidence: "AR_1" }),
+    };
   };
   t.after(() => {
     delete global.chrome;
     delete global.fetch;
   });
-  return { cap, instanceUrl };
+  return { cap, instanceUrl, store };
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +91,10 @@ test("buildTar writes a valid ustar header and pads to 512-byte blocks", () => {
 test("gzip output round-trips through gunzip", async () => {
   const bytes = new TextEncoder().encode("hello tar payload");
   const gz = await gzip(bytes);
-  assert.equal(zlib.gunzipSync(Buffer.from(gz)).toString(), "hello tar payload");
+  assert.equal(
+    zlib.gunzipSync(Buffer.from(gz)).toString(),
+    "hello tar payload",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -97,11 +118,24 @@ test("upload files claude.ai conversations as raw JSON under claude-web/", async
     chat_messages: [{ sender: "human", text: "hi", content: [] }],
   };
 
-  const res = await upload({ provider: "claude-ai", conversations: [conv], windowDays: 7 }, 1);
+  const res = await upload(
+    { provider: "claude-ai", conversations: [conv], span: SPAN },
+    1,
+  );
 
-  assert.deepEqual(res, { ok: true, reportUrl: instanceUrl + "/aiscan/AR_1", sessions: 1 });
+  assert.deepEqual(res, {
+    ok: true,
+    sessions: 1,
+    evidence: "AR_1",
+    reportsUrl: instanceUrl + "/aiscan",
+  });
   assert.ok(cap.url.includes("source=claude-web"));
-  assert.ok(cap.url.includes("window_days=7"));
+  // Span-based ingest contract: the upload is tagged with the span it fulfills,
+  // plus the v1 schema version.
+  const u = new URL(cap.url);
+  assert.equal(u.searchParams.get("captured_start"), SPAN.start);
+  assert.equal(u.searchParams.get("captured_end"), SPAN.end);
+  assert.equal(u.searchParams.get("schema_version"), "1");
   assert.equal(cap.opts.headers.authorization, "Bearer tok");
   const { name, json } = firstMember(cap.opts.body);
   assert.equal(name, "claude-web/u1.json"); // raw, server parses
@@ -117,10 +151,14 @@ test("upload files chatgpt conversations as raw JSON under chatgpt/", async (t) 
     mapping: { n1: { id: "n1", parent: null, children: [], message: null } },
   };
 
-  const res = await upload({ provider: "chatgpt", conversations: [conv], windowDays: 0 }, 1);
+  // No span supplied → the all-time fallback [epoch, now].
+  const res = await upload({ provider: "chatgpt", conversations: [conv] }, 1);
 
   assert.equal(res.sessions, 1);
   assert.ok(cap.url.includes("source=chatgpt-web"));
+  const u = new URL(cap.url);
+  assert.equal(u.searchParams.get("captured_start"), new Date(0).toISOString());
+  assert.ok(u.searchParams.get("captured_end"), "captured_end present");
   const { name, json } = firstMember(cap.opts.body);
   assert.equal(name, "chatgpt/g1.json");
   assert.deepEqual(json, conv);
@@ -133,10 +171,23 @@ test("upload ships gemini conversations as raw JSON under gemini/", async (t) =>
     conversation_id: "c_1",
     title: "Weight Reduction",
     updated_at: "2026-01-21T00:00:00.000Z",
-    payload: [[[["c_1", "r_1"], null, [["hi"], 4], [[["rc_1", ["hello"]]]], [1769009299, 0]]]],
+    payload: [
+      [
+        [
+          ["c_1", "r_1"],
+          null,
+          [["hi"], 4],
+          [[["rc_1", ["hello"]]]],
+          [1769009299, 0],
+        ],
+      ],
+    ],
   };
 
-  const res = await upload({ provider: "gemini", conversations: [conv], windowDays: 0 }, 1);
+  const res = await upload(
+    { provider: "gemini", conversations: [conv], span: SPAN },
+    1,
+  );
 
   assert.equal(res.sessions, 1);
   assert.ok(cap.url.includes("source=gemini-web"));
@@ -148,7 +199,13 @@ test("upload ships gemini conversations as raw JSON under gemini/", async (t) =>
 test("upload skips gemini conversations whose payload failed to load", async (t) => {
   mockEnv(t);
   await assert.rejects(
-    upload({ provider: "gemini", conversations: [{ conversation_id: "c_1", payload: null }] }, 1),
+    upload(
+      {
+        provider: "gemini",
+        conversations: [{ conversation_id: "c_1", payload: null }],
+      },
+      1,
+    ),
     /nothing to upload/,
   );
 });
@@ -159,4 +216,85 @@ test("upload throws when there is nothing capturable", async (t) => {
     upload({ provider: "chatgpt", conversations: [null] }, 1),
     /nothing to upload/,
   );
+});
+
+test("upload posts an empty body to record a confirmed-empty span", async (t) => {
+  const { cap } = mockEnv(t);
+  // An empty conversation set is a deliberate confirmed-empty window, not an
+  // error: the server records the span as scanned so it never re-asks for it.
+  const res = await upload(
+    { provider: "claude-ai", conversations: [], span: SPAN },
+    1,
+  );
+
+  assert.equal(res.sessions, 0);
+  assert.equal(cap.opts.body.length, 0); // zero-length body
+  const u = new URL(cap.url);
+  assert.equal(u.searchParams.get("captured_start"), SPAN.start);
+  assert.equal(u.searchParams.get("captured_end"), SPAN.end);
+  assert.equal(u.searchParams.get("schema_version"), "1");
+});
+
+// ---------------------------------------------------------------------------
+// sync plan: the client offers its available span; the server returns just the
+// spans it still needs, scoped to the provider's source + the v1 schema version.
+// ---------------------------------------------------------------------------
+
+test("plan requests needed spans for the provider's source", async (t) => {
+  const { cap, instanceUrl } = mockEnv(t, {
+    respond: async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          data: {
+            aiscanSyncPlan: {
+              neededSpans: [
+                { start: "2026-06-10T00:00:00Z", end: "2026-07-01T00:00:00Z" },
+              ],
+            },
+          },
+        }),
+    }),
+  });
+  const available = [
+    { start: "2026-01-01T00:00:00Z", end: "2026-07-01T00:00:00Z" },
+  ];
+  const res = await plan({ provider: "claude-ai", available }, 1);
+
+  assert.ok(cap.url.endsWith("/graphql"));
+  assert.equal(cap.opts.headers.authorization, "Bearer tok");
+  const reqBody = JSON.parse(cap.opts.body);
+  assert.equal(reqBody.variables.source, "claude-web");
+  assert.equal(reqBody.variables.schemaVersion, 1);
+  assert.deepEqual(reqBody.variables.available, available);
+  assert.equal(res.reportsUrl, instanceUrl + "/aiscan");
+  assert.equal(res.neededSpans.length, 1);
+  assert.equal(res.neededSpans[0].start, "2026-06-10T00:00:00Z");
+});
+
+test("plan surfaces graphql errors", async (t) => {
+  mockEnv(t, {
+    respond: async () => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({ errors: [{ message: "aiscan not enabled" }] }),
+    }),
+  });
+  await assert.rejects(
+    plan({ provider: "claude-ai", available: [] }, 1),
+    /aiscan not enabled/,
+  );
+});
+
+test("plan clears the cached token and reports a rejected token", async (t) => {
+  const { store } = mockEnv(t, {
+    respond: async () => ({ ok: false, status: 401, text: async () => "" }),
+  });
+  await assert.rejects(
+    plan({ provider: "claude-ai", available: [] }, 1),
+    /unauthorized/,
+  );
+  assert.equal(store.auth, undefined); // cache cleared so the next scan re-auths
 });
