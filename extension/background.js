@@ -3,11 +3,19 @@
 //
 // The capture itself runs in the content script (content.js) on the AI site's
 // page, where fetch carries first-party credentials. This worker does the parts
-// that must NOT run on the site's origin:
-//   1. pack each provider's raw capture into a gzipped tar (one file per
+// that must NOT run on the site's origin (they target the aiscan instance, a
+// different origin):
+//   1. ask the server which spans it still needs (aiscanSyncPlan over GraphQL),
+//   2. pack each provider's raw capture into a gzipped tar (one file per
 //      conversation, under that provider's dir),
-//   2. obtain an OAuth access token via the device-code flow (cached),
-//   3. POST the gzip to {instance}/api/aiscan/ingest.
+//   3. obtain an OAuth access token via the device-code flow (cached),
+//   4. POST the gzip to {instance}/api/aiscan/ingest as evidence for one span.
+//
+// This mirrors the desktop client's v1 sync contract: the client discovers what
+// exists, the server hands back the missing spans, and the client uploads only
+// those — so repeat syncs never re-fetch or re-upload transcripts the server
+// already has. Each upload deposits evidence for its span; the analysis report
+// is built server-side, separately.
 //
 // Parsing is the SERVER's job: every provider uploads its raw API capture and a
 // dedicated server-side parser turns it into the normalized session model. The
@@ -17,6 +25,10 @@ const DEFAULT_INSTANCE = "https://app.skills.new";
 const AISCAN_CLIENT_ID = "sleuth-aiscan"; // well-known public client on the server
 const OAUTH_SCOPE = "skills";
 const DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
+// v1 sync contract — same schema version the desktop client declares. It scopes
+// both the sync-plan query and the ingest upload so the server pairs a plan with
+// the evidence it later receives.
+const SCHEMA_VERSION = 1;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -244,9 +256,67 @@ const PROVIDER_CFG = {
   },
 };
 
+// aiscanSyncPlan — the client offers its available span(s) and the server
+// returns just the spans it still needs. One fixed query, hand-rolled JSON over
+// GraphQL (matching upload's style — no client library). The client does no
+// interval math of its own; the server owns coverage.
+const PLAN_QUERY =
+  "query Plan($source: String!, $schemaVersion: Int!, $available: [AiScanSpanInput!]!) {" +
+  " aiscanSyncPlan(source: $source, schemaVersion: $schemaVersion, available: $available) {" +
+  " neededSpans { start end } } }";
+
+// plan asks the server which spans of this source's history are still missing.
+// `msg.available` is the client's discovered span set ([{start,end}] ISO 8601).
+// Returns { ok, neededSpans, reportsUrl }; throws on auth/GraphQL errors so the
+// message handler can report them.
+async function plan(msg, tabId) {
+  const instanceUrl = await getInstanceUrl();
+  const cfg = PROVIDER_CFG[msg.provider] || PROVIDER_CFG["claude-ai"];
+  const token = await ensureToken(instanceUrl, tabId);
+
+  const res = await fetch(instanceUrl + "/graphql", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: "Bearer " + token,
+    },
+    body: JSON.stringify({
+      query: PLAN_QUERY,
+      variables: {
+        source: cfg.source,
+        schemaVersion: SCHEMA_VERSION,
+        available: Array.isArray(msg.available) ? msg.available : [],
+      },
+    }),
+  });
+  const text = await res.text();
+  if (res.status === 401) {
+    await chrome.storage.local.remove("auth"); // force re-auth next time
+    throw new Error(
+      "unauthorized — the token was rejected; scan again to re-authorize",
+    );
+  }
+  if (!res.ok) throw new Error("sync plan " + res.status + ": " + text);
+
+  const parsed = JSON.parse(text);
+  if (parsed.errors && parsed.errors.length)
+    throw new Error(
+      "sync plan: " + parsed.errors.map((e) => e.message).join("; "),
+    );
+  const data = parsed.data && parsed.data.aiscanSyncPlan;
+  return {
+    ok: true,
+    neededSpans: (data && data.neededSpans) || [],
+    reportsUrl: instanceUrl + "/aiscan",
+  };
+}
+
+// upload posts the conversations selected for one span as evidence for that
+// span. An empty conversation set is a deliberate confirmed-empty window: we
+// still POST (with an empty body) so the server records the span as scanned and
+// never asks for it again. captured_start/captured_end come from msg.span.
 async function upload(msg, tabId) {
   const instanceUrl = await getInstanceUrl();
-  const capturedAt = new Date().toISOString();
   const conversations = Array.isArray(msg.conversations)
     ? msg.conversations
     : [];
@@ -264,20 +334,35 @@ async function upload(msg, tabId) {
     const name = cfg.dir + (cfg.idOf(conv) || "conv-" + i) + ".json";
     files.push({ name, data });
   });
-  if (!files.length)
+  // Conversations handed over yet all unpackable is a real failure — surface it
+  // rather than silently marking the span covered. (An intentionally empty span
+  // arrives as conversations=[] and packs to zero files, which is fine.)
+  if (conversations.length && !files.length)
     throw new Error("nothing to upload (no capturable conversations)");
 
-  const mtime = Math.floor(Date.parse(capturedAt) / 1000);
-  const body = await gzip(buildTar(files, mtime));
+  // The ingest contract is span-based: it requires the captured window as ISO
+  // 8601 [captured_start, captured_end]. content.js passes the span the server
+  // asked for; fall back to an all-time span if one wasn't supplied.
+  const span = msg.span || {};
+  const capturedEnd = span.end || new Date().toISOString();
+  const capturedStart = span.start || new Date(0).toISOString();
+
+  const mtime = Math.floor(Date.parse(capturedEnd) / 1000);
+  const body = files.length
+    ? await gzip(buildTar(files, mtime))
+    : new Uint8Array(0);
 
   const token = await ensureToken(instanceUrl, tabId);
-  const windowDays = msg.windowDays || 0;
   const url =
     instanceUrl +
     "/api/aiscan/ingest?source=" +
     encodeURIComponent(cfg.source) +
-    "&window_days=" +
-    windowDays;
+    "&captured_start=" +
+    encodeURIComponent(capturedStart) +
+    "&captured_end=" +
+    encodeURIComponent(capturedEnd) +
+    "&schema_version=" +
+    SCHEMA_VERSION;
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -295,14 +380,18 @@ async function upload(msg, tabId) {
   }
   if (!res.ok) throw new Error("ingest " + res.status + ": " + text);
 
-  let gid = "";
+  // The response acknowledges the deposited evidence; there is no per-upload
+  // report to link to — reports live at the instance's /aiscan index.
+  let evidence = "";
   try {
-    gid = JSON.parse(text).run || "";
+    evidence = JSON.parse(text).evidence || "";
   } catch (_) {}
-  const reportUrl = gid
-    ? instanceUrl + "/aiscan/" + gid
-    : instanceUrl + "/aiscan";
-  return { ok: true, reportUrl, sessions: files.length };
+  return {
+    ok: true,
+    sessions: files.length,
+    evidence,
+    reportsUrl: instanceUrl + "/aiscan",
+  };
 }
 
 // Register the worker's event listeners only in the extension runtime. Under
@@ -333,19 +422,23 @@ if (typeof chrome !== "undefined" && chrome.runtime) {
   });
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg && msg.type === "upload") {
-      const tabId = sender && sender.tab && sender.tab.id;
-      upload(msg, tabId)
-        .then((r) => sendResponse(r))
-        .catch((e) =>
-          sendResponse({
-            ok: false,
-            error: e && e.message ? e.message : String(e),
-          }),
-        );
-      return true; // keep the channel open for the async response
-    }
-    return false;
+    const tabId = sender && sender.tab && sender.tab.id;
+    const handler =
+      msg && msg.type === "plan"
+        ? plan
+        : msg && msg.type === "upload"
+          ? upload
+          : null;
+    if (!handler) return false;
+    handler(msg, tabId)
+      .then((r) => sendResponse(r))
+      .catch((e) =>
+        sendResponse({
+          ok: false,
+          error: e && e.message ? e.message : String(e),
+        }),
+      );
+    return true; // keep the channel open for the async response
   });
 }
 
@@ -353,5 +446,5 @@ if (typeof chrome !== "undefined" && chrome.runtime) {
 // inert in the MV3 worker (no CommonJS `module` there), so it changes nothing
 // about how the extension loads.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { buildTar, gzip, upload, PROVIDER_CFG };
+  module.exports = { buildTar, gzip, plan, upload, PROVIDER_CFG };
 }
