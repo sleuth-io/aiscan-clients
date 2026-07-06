@@ -98,5 +98,5 @@ crash recovery, not update adoption.
 ```
 cmd/aiscan/       entry point
 internal/         capture, redaction, upload, autoupdate, auth, cli (verbs + daemon agent), tray
-packaging/macos/  Info.plist + make-dmg.sh (app bundle, ad-hoc signed, dmg)
+packaging/macos/  Info.plist + AppIcon.png + make-dmg.sh (app bundle, ad-hoc signed, dmg)
 ```
