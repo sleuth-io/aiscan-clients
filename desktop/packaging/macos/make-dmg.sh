@@ -17,9 +17,21 @@ STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
 APP="$STAGE/dmg/Aiscan.app"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 sed "s/__VERSION__/${VERSION}/g" "$HERE/Info.plist" > "$APP/Contents/Info.plist"
 install -m 0755 "$BIN" "$APP/Contents/MacOS/aiscan"
+
+# Build AppIcon.icns from the committed 1024px source. sips/iconutil are macOS
+# only, which is fine: the dmg is only ever assembled on the macOS runner.
+ICONSET="$STAGE/AppIcon.iconset"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$HERE/AppIcon.png" \
+    --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  sips -z $((size * 2)) $((size * 2)) "$HERE/AppIcon.png" \
+    --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc signature: no cert or Apple account, but Apple Silicon refuses
 # unsigned arm64 binaries outright and a fresh seal covers the whole bundle.
