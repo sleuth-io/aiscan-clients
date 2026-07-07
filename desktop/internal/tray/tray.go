@@ -10,6 +10,7 @@ package tray
 
 import (
 	_ "embed"
+	"strings"
 	"time"
 
 	"fyne.io/systray"
@@ -147,7 +148,7 @@ func statusLine(st State) string {
 	case st.Syncing:
 		return "Syncing…"
 	case st.LastErr != "":
-		return "Problem: " + st.LastErr
+		return "Problem: " + truncate(oneLine(st.LastErr), maxStatusLen)
 	case st.Username == "":
 		return ""
 	case st.Paused:
@@ -157,4 +158,24 @@ func statusLine(st State) string {
 	default:
 		return "Last sync " + st.LastSync.Format("3:04 PM")
 	}
+}
+
+// maxStatusLen caps how much of a raw error we show in the status line. Error
+// strings can be arbitrarily long (wrapped chains, server response bodies);
+// without a cap a single failure can stretch the tray menu across the screen.
+const maxStatusLen = 60
+
+// oneLine collapses any run of whitespace (including newlines) into single
+// spaces so a multi-line error can't push the menu item to several rows.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// truncate shortens s to at most n runes, appending an ellipsis when it cuts.
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
