@@ -43,13 +43,16 @@ syncing". A file lock guarantees a single instance; a second launch just says so
 `Aiscan.dmg` (a release asset on `desktop-v*` releases) wraps the same binary in a menu-bar-only
 app bundle (`LSUIElement`). A double-click with no argv runs the daemon. Install flow:
 
-1. Open the dmg, drag **Aiscan** to **Applications** (the drag is required: a quarantined app
-   run in place is App-Translocated to a read-only path — the daemon detects this and asks the
+1. Open the dmg, drag **Aiscan** to **Applications** (the drag is required: an app run in place
+   from the dmg is App-Translocated to a read-only path — the daemon detects this and asks the
    user to move it rather than half-working).
-2. First launch is blocked by Gatekeeper (the pilot is ad-hoc signed, no Apple Developer
-   account): the dialog only offers *Done* / *Move to Trash*. Open **System Settings → Privacy
-   & Security**, scroll down, click **"Open Anyway"**, and launch again. One-time.
+2. Launch **Aiscan** from `/Applications`. The app is Developer ID signed, notarized, and
+   stapled, so it opens on first double-click with no Gatekeeper prompt.
 3. Success looks like: nothing opens, but the aiscan bars icon appears in the menu bar.
+
+Releases are only signed/notarized when the Apple secrets are configured in CI (see
+`packaging/macos/`); a build without them falls back to an ad-hoc signature, which on first
+launch needs the one-time **System Settings → Privacy & Security → "Open Anyway"** step.
 
 On first launch from `/Applications` the daemon installs a LaunchAgent
 (`~/Library/LaunchAgents/io.sleuth.aiscan.plist`): `RunAtLoad` starts it at login and
@@ -65,8 +68,11 @@ Releases are GitHub Releases tagged `desktop-vX.Y.Z` (every client in this repo 
 tags; the browser extension uses `extension-v*`), published by
 `.github/workflows/release-desktop.yml`. The darwin binaries are built on a macOS runner (the
 tray needs Cgo/Cocoa there) and the app bundle ships the identical binary the tarball carries,
-so a self-update binary swap inside `Aiscan.app` never loses the tray. The dmg is deliberately
-named without `<os>_<arch>` tokens so go-selfupdate always picks the tarball.
+so a self-update binary swap inside `Aiscan.app` never loses the tray. That tarball binary is
+signed with the same Developer ID as the bundle, so the swap keeps the app launchable and
+preserves its code identity (a binary the updater fetches over HTTP is not quarantined, so
+Gatekeeper does not re-assess the bundle). The dmg is deliberately named without `<os>_<arch>`
+tokens so go-selfupdate always picks the tarball.
 
 On any run, at most once per day, the client checks for a newer release in the background and
 swaps the binary in place — sha256-verified against the release's `checksums.txt`. Because the
@@ -98,5 +104,6 @@ crash recovery, not update adoption.
 ```
 cmd/aiscan/       entry point
 internal/         capture, redaction, upload, autoupdate, auth, cli (verbs + daemon agent), tray
-packaging/macos/  Info.plist + AppIcon.png + make-dmg.sh (app bundle, ad-hoc signed, dmg)
+packaging/macos/  Info.plist + AppIcon.png + entitlements.plist + make-dmg.sh (app bundle,
+                  Developer ID signed + notarized, dmg)
 ```

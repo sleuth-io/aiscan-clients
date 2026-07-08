@@ -7,9 +7,12 @@ name: Release desktop
 #     from them. darwin builds happen on a macOS runner because the system
 #     tray needs Cgo/Cocoa there; the same tray-enabled binary ships in the
 #     tarball and the app bundle, so a binary swap never loses the tray.
-#   - Aiscan.dmg — the macOS app bundle (arm64), ad-hoc signed, with an
+#   - Aiscan.dmg — the macOS app bundle (arm64), Developer ID signed +
+#     notarized + stapled (ad-hoc when the Apple secrets are absent), with an
 #     /Applications symlink. Deliberately named without <os>_<arch> tokens so
-#     go-selfupdate never picks it over the tarball.
+#     go-selfupdate never picks it over the tarball. The darwin CLI binaries in
+#     the tarballs are signed with the same identity so a self-update swap into
+#     the bundle preserves code identity.
 #   - checksums.txt — sha256 manifest over all of the above; clients verify
 #     downloads against it.
 #
@@ -21,6 +24,17 @@ name: Release desktop
 on:
   push:
     tags: ['desktop-v*']
+  # Manual smoke test of the signing/notarization pipeline. Builds, signs, and
+  # notarizes exactly like a real release, but the `release` job is skipped
+  # (see its `if:`), so nothing is published — the signed dmg/tarballs are only
+  # attached as run artifacts. Use this to validate the Apple secrets end-to-end
+  # without burning a version tag.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version label to stamp into the dev build
+        default: 0.0.0-dev
+        required: false
 
 permissions:
   contents: write # create the Release
@@ -77,6 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#desktop-v}"
+          if [ -n "${{ inputs.version }}" ]; then VERSION="${{ inputs.version }}"; fi  # workflow_dispatch override
           COMMIT="$(git rev-parse --short HEAD)"
           DATE="$(date -u +%Y-%m-%d)"
           BI="github.com/sleuth-io/aiscan-clients/desktop/internal/buildinfo"
@@ -121,22 +136,77 @@ jobs:
     name: Build macOS
     needs: test
     runs-on: macos-14
+    # Cap the 10x-billed macOS runner. Normal runs finish in minutes; this rides
+    # out one genuinely slow notarization (each submit is bounded to 2h) while
+    # staying well under GitHub's hard 6h job limit.
+    timeout-minutes: 150
+    # Developer ID signing + notarization when the Apple secrets are set;
+    # otherwise fall back to an ad-hoc build so the release still succeeds
+    # (e.g. from a fork without the secrets). See desktop/packaging/macos.
+    env:
+      SIGN: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 != '' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: desktop/go.mod
 
+      - name: Import Developer ID certificate
+        if: env.SIGN == 'true'
+        env:
+          CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/aiscan-signing.keychain-db"
+          KEYCHAIN_PW="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          printf '%s' "$CERT_P12" | openssl base64 -d -A > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          # Let codesign use the key non-interactively.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PW" "$KEYCHAIN" >/dev/null
+          # Prepend our keychain to the search list so codesign resolves the identity.
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Derive the signing identity from the imported cert (its CN is exactly
+          # "Developer ID Application: <name> (<team>)") so we need no extra secret.
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "$IDENTITY" ]; then echo "::error::no Developer ID Application identity in the imported cert"; exit 1; fi
+          echo "MACOS_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Write notary API key
+        if: env.SIGN == 'true'
+        env:
+          NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+        # The secret holds the raw .p8 PEM text (not base64), so write it verbatim.
+        run: printf '%s\n' "$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary_key.p8"
+
       - name: Build binaries, app bundle, dmg
         env:
           CGO_ENABLED: 1 # the tray needs Cocoa on macOS
+          # MACOS_SIGN_IDENTITY is exported into GITHUB_ENV by the import step.
+          MACOS_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#desktop-v}"
+          if [ -n "${{ inputs.version }}" ]; then VERSION="${{ inputs.version }}"; fi  # workflow_dispatch override
           COMMIT="$(git rev-parse --short HEAD)"
           DATE="$(date -u +%Y-%m-%d)"
           BI="github.com/sleuth-io/aiscan-clients/desktop/internal/buildinfo"
           LDFLAGS="-s -w -X ${BI}.Version=${VERSION} -X ${BI}.Commit=${COMMIT} -X ${BI}.Date=${DATE}"
+
+          ENTITLEMENTS="$PWD/desktop/packaging/macos/entitlements.plist"
+          if [ "${SIGN:-}" = "true" ]; then
+            # make-dmg.sh reads these to sign + notarize the app and dmg.
+            export MACOS_ENTITLEMENTS="$ENTITLEMENTS"
+            export MACOS_NOTARY_KEY="$RUNNER_TEMP/notary_key.p8"
+          else
+            # No secrets: ad-hoc build — clear the identity so make-dmg.sh falls back.
+            unset MACOS_SIGN_IDENTITY
+          fi
 
           mkdir -p dist
           for GOARCH in arm64 amd64; do
@@ -148,11 +218,30 @@ jobs:
             mkdir -p "$outdir"
             (cd desktop && GOARCH="$GOARCH" \
               go build -trimpath -ldflags "$LDFLAGS" -o "../${outdir}/aiscan" ./cmd/aiscan)
+
+            # Sign the standalone binary with the SAME identity + entitlements as
+            # the bundled one, so a self-update binary swap preserves code identity.
+            if [ "${SIGN:-}" = "true" ]; then
+              codesign --force --options runtime --timestamp \
+                --entitlements "$ENTITLEMENTS" \
+                --sign "$MACOS_SIGN_IDENTITY" "${outdir}/aiscan"
+            fi
             tar -czf "dist/aiscan_Darwin_${ARCH_LABEL}.tar.gz" -C "$outdir" aiscan
           done
 
+          # Notarize the standalone CLI binaries. A bare Mach-O can't be stapled,
+          # but this registers their tickets so a browser download passes the
+          # online Gatekeeper check.
+          if [ "${SIGN:-}" = "true" ]; then
+            ditto -c -k dist/build "$RUNNER_TEMP/cli-binaries.zip"
+            xcrun notarytool submit "$RUNNER_TEMP/cli-binaries.zip" \
+              --key "$MACOS_NOTARY_KEY" --key-id "$MACOS_NOTARY_KEY_ID" \
+              --issuer "$MACOS_NOTARY_ISSUER" --wait --timeout 2h
+          fi
+
           # The .app ships the same arm64 binary the tarball carries, so a
           # go-selfupdate binary swap inside the bundle changes nothing else.
+          # make-dmg.sh signs/notarizes/staples the app + dmg when the env is set.
           desktop/packaging/macos/make-dmg.sh dist/build/darwin_arm64/aiscan "$VERSION" dist
           rm -rf dist/build
           ls -l dist
@@ -163,9 +252,19 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+      - name: Clean up signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/aiscan-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/notary_key.p8" "$RUNNER_TEMP/cert.p12" \
+                "$RUNNER_TEMP/cli-binaries.zip" 2>/dev/null || true
+
   release:
     name: Create release
     needs: [build-linux-windows, build-darwin]
+    # Never publish from a manual dispatch — that path only tests the
+    # build/sign/notarize pipeline. Real releases come from desktop-v* tags.
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the aiscan Developer ID build.
+
+  Deliberately EMPTY. A statically-linked Go binary with a Cocoa menu-bar tray
+  needs no exceptions: outbound network upload is unrestricted for a
+  non-sandboxed Developer ID app (network.client is an App Sandbox entitlement,
+  not a hardened-runtime one), and self-update (replacing its own binary +
+  re-exec) needs no entitlement either.
+
+  Both the standalone CLI binary and the .app's main executable are signed with
+  THIS file so their entitlements match — a mismatch would change the code
+  identity across a self-update swap. Add an exception here (e.g.
+  com.apple.security.cs.allow-jit) only if a notarization log demands it.
+-->
+<plist version="1.0">
+<dict/>
+</plist>
