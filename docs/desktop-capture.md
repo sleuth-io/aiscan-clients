@@ -88,6 +88,21 @@ The dump mirrors the on-disk layout under a per-source prefix
 Reads `~/.claude/projects/**/*.jsonl`. `--window-days N` drops files modified before the
 cutoff. Non-`.jsonl` files are ignored. Raw bytes only — no parsing.
 
+### Antigravity (`capture/antigravity`)
+Google's Antigravity writes the same per-conversation JSONL transcript format
+(`brain/<id>/.system_generated/logs/transcript*.jsonl`) from every surface — it differs only
+by which `~/.gemini` subdirectory holds it. The package exposes **two** recipes so the usage
+report can tell the surfaces apart:
+
+- `antigravity-cli` — the CLI, `~/.gemini/antigravity-cli/`.
+- `antigravity-ide` — the IDE, spanning both `~/.gemini/antigravity/` (legacy) and
+  `~/.gemini/antigravity-ide/` (2.0+); both roots are tagged `antigravity-ide`.
+
+Scoped to the `antigravity*` subdirectories so Gemini CLI's own files (e.g.
+`~/.gemini/oauth_creds.json`) are never touched. `.jsonl` only, raw bytes, no parsing — the
+IDE also keeps a VS Code `state.vscdb`, but the transcripts are the auditable JSONL and that
+is all we read.
+
 ### Adding a source
 1. Write `capture/<tool>/<tool>.go` exposing a `capture.Recipe`.
 2. Add one line to the `recipes` list in `cli/capture.go`.
