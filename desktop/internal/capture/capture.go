@@ -26,6 +26,13 @@ const (
 	// SourceCursor is the Cursor editor, whose agent ("composer") chats live in a
 	// SQLite store rather than per-session files.
 	SourceCursor SourceID = "cursor"
+	// SourceAntigravityCLI is Google's Antigravity CLI, which keeps per-conversation
+	// JSONL transcripts under ~/.gemini/antigravity-cli.
+	SourceAntigravityCLI SourceID = "antigravity-cli"
+	// SourceAntigravityIDE is the Antigravity IDE (the agentic editor). It writes
+	// the same per-conversation JSONL transcript format as the CLI, under
+	// ~/.gemini/antigravity (legacy) and ~/.gemini/antigravity-ide (2.0+).
+	SourceAntigravityIDE SourceID = "antigravity-ide"
 	// SourceCopilot, ... land here as they are implemented.
 )
 
