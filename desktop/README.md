@@ -88,12 +88,16 @@ process usually exits before the download finishes, a pending-update marker is w
 the next run applies it, then re-execs so it already runs the new version (two-phase, ported
 from the sx CLI).
 
-The resident daemon re-runs the same throttled check on a ticker and, after a successful swap,
-re-execs itself at the next idle point to adopt the new binary — the OS supervisor is only for
-crash recovery, not update adoption.
+The resident daemon re-runs the same throttled check on a ticker and restarts itself at the
+next idle point to adopt the new binary — the OS supervisor is only for crash recovery, not
+update adoption. The restart is an exec-in-place, except the macOS daemon, which spawns a
+successor process and exits: an exec'd process keeps its stale LaunchServices registration and
+its menu-bar icon silently never appears.
 
 - `AISCAN_DISABLE_AUTOUPDATER=1` turns the background updater off; `aiscan update` still works.
-- Dev builds (version `dev` or `-dirty`) never self-update.
+- Dev builds never self-update: version `dev`, `-dirty`, or a git-describe suffix (`X.Y.Z-N-g<hash>`,
+  a commit past the release tag — semver reads it as a *prerelease* of X.Y.Z, so updating would
+  quietly replace a test build with the older official release).
 - State lives in the user cache dir (`~/.cache/aiscan` on Linux, `~/Library/Caches/aiscan` on
   macOS): `last-update-check` (throttle) and `pending-update.json` (marker).
 

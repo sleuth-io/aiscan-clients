@@ -110,6 +110,9 @@ func Daemon(args []string) error {
 		buildinfo.Version, *instance, *interval, logPath, !*noTray)
 
 	a := newAgent(*instance, exe, *interval, logger, logW)
+	// Hand the agent the lock release so a macOS update restart can pass the
+	// single-instance lock to its spawned successor (agent.restart).
+	a.releaseLock = release
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

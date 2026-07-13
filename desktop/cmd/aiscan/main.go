@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/autoupdate"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/cli"
@@ -17,7 +18,19 @@ func main() {
 	// /proc/self/exe points at a deleted inode.
 	exe, _ := os.Executable()
 	if autoupdate.ApplyPendingUpdate() {
-		autoupdate.Reexec(exe)
+		if darwinDaemon() {
+			// The macOS daemon must not exec in place: the exec'd image loses
+			// its LaunchServices registration and its tray icon never appears.
+			// Hand off to a fresh process instead. If the spawn fails, run on
+			// as the old image — the swapped binary is adopted at the next
+			// restart; exec-in-place is no fallback here, it would strand an
+			// invisible daemon.
+			if autoupdate.Respawn(exe) == nil {
+				return
+			}
+		} else {
+			autoupdate.Reexec(exe)
+		}
 	}
 	// Daily background check, unless the user is updating explicitly.
 	if len(os.Args) < 2 || os.Args[1] != "update" {
@@ -71,4 +84,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, cli.Help())
 		os.Exit(2)
 	}
+}
+
+// darwinDaemon reports whether this invocation is the macOS daemon — the
+// explicit verb or a no-argv app-bundle launch. Those runs restart by spawning
+// a successor rather than exec-in-place (see Respawn).
+func darwinDaemon() bool {
+	return runtime.GOOS == "darwin" &&
+		((len(os.Args) > 1 && os.Args[1] == "daemon") || cli.LaunchedFromAppBundle())
 }
