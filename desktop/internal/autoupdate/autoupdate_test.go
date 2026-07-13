@@ -3,6 +3,7 @@ package autoupdate
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -36,6 +37,47 @@ func writeMarker(t *testing.T, content []byte) string {
 		t.Fatalf("write marker: %v", err)
 	}
 	return markerPath
+}
+
+func TestIsDevBuild(t *testing.T) {
+	cases := []struct {
+		version string
+		want    bool
+	}{
+		{"dev", true},
+		{"", true},
+		{"0.2.2-dirty", true},
+		{"0.2.2-1-g2eb714a-dirty", true},
+		// A clean commit past the release tag: semver-below the release, so
+		// updating would silently replace the build under test.
+		{"0.2.2-1-g2eb714a", true},
+		{"0.2.2-14-gdeadbeef", true},
+		{"0.2.2", false},
+		{"1.0.0", false},
+	}
+	for _, c := range cases {
+		setVersion(t, c.version)
+		if got := isDevBuild(); got != c.want {
+			t.Errorf("isDevBuild(%q) = %v, want %v", c.version, got, c.want)
+		}
+	}
+}
+
+func TestRespawnEmptyPath(t *testing.T) {
+	if err := Respawn(""); err == nil {
+		t.Fatal("Respawn(\"\"): want error")
+	}
+}
+
+func TestRespawnStartsProcess(t *testing.T) {
+	// `true` ignores whatever test flags os.Args carries into the child.
+	path, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("no `true` binary on PATH")
+	}
+	if err := Respawn(path); err != nil {
+		t.Fatalf("Respawn(%q): %v", path, err)
+	}
 }
 
 func TestCheckAndUpdateDevBuild(t *testing.T) {

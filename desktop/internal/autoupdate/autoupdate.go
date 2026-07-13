@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -63,16 +64,25 @@ func Disabled() bool {
 	return false
 }
 
+// describeAhead matches a version stamped from a commit past the release tag
+// (`git describe` → e.g. 0.2.2-1-g2eb714a). Semver reads that suffix as a
+// prerelease of 0.2.2 — *below* the released 0.2.2 — so without this the
+// updater would "upgrade" such a build back to the official release.
+var describeAhead = regexp.MustCompile(`-\d+-g[0-9a-f]+$`)
+
 // isDevBuild reports whether this binary was built outside the release
-// pipeline (plain `go build`, or a dirty tree) and so must never self-update.
+// pipeline (plain `go build`, a dirty tree, or a commit past the latest
+// release tag) and so must never self-update.
 func isDevBuild() bool {
 	v := buildinfo.Version
-	return v == "dev" || v == "" || strings.Contains(v, "-dirty")
+	return v == "dev" || v == "" || strings.Contains(v, "-dirty") || describeAhead.MatchString(v)
 }
 
-// cacheDir returns the directory holding autoupdate state, honoring the
-// AISCAN_CACHE_DIR override (tests) like auth's AISCAN_CONFIG_DIR.
-func cacheDir() (string, error) {
+// CacheDir returns the directory holding autoupdate state, honoring the
+// AISCAN_CACHE_DIR override (tests) like auth's AISCAN_CONFIG_DIR. Exported
+// for update-adjacent state kept by other packages (the daemon's per-version
+// registration-bounce stamp).
+func CacheDir() (string, error) {
 	if dir := os.Getenv("AISCAN_CACHE_DIR"); dir != "" {
 		return dir, nil
 	}
@@ -84,7 +94,7 @@ func cacheDir() (string, error) {
 }
 
 func pendingUpdatePath() (string, error) {
-	dir, err := cacheDir()
+	dir, err := CacheDir()
 	if err != nil {
 		return "", err
 	}
@@ -277,7 +287,7 @@ func writePendingUpdate(release *selfupdate.Release) error {
 // shouldCheck reports whether the last check was more than checkInterval ago,
 // tracked via the throttle file's mtime.
 func shouldCheck() bool {
-	dir, err := cacheDir()
+	dir, err := CacheDir()
 	if err != nil {
 		return true
 	}
@@ -289,7 +299,7 @@ func shouldCheck() bool {
 }
 
 func updateCheckTimestamp() error {
-	dir, err := cacheDir()
+	dir, err := CacheDir()
 	if err != nil {
 		return err
 	}

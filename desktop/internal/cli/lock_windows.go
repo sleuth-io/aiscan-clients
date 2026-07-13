@@ -3,8 +3,7 @@
 package cli
 
 import (
-	"os"
-	"path/filepath"
+	"log"
 
 	"golang.org/x/sys/windows"
 )
@@ -13,15 +12,11 @@ import (
 // (no-share-mode) file handle, Windows' equivalent of a flock that a crashed
 // process can never leave stuck. locked=false means another daemon holds it.
 func acquireDaemonLock() (release func(), locked bool, err error) {
-	dir, err := os.UserCacheDir()
+	lockPath, err := daemonLockPath()
 	if err != nil {
 		return nil, false, err
 	}
-	dir = filepath.Join(dir, "aiscan")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, false, err
-	}
-	path, err := windows.UTF16PtrFromString(filepath.Join(dir, "daemon.lock"))
+	path, err := windows.UTF16PtrFromString(lockPath)
 	if err != nil {
 		return nil, false, err
 	}
@@ -34,4 +29,10 @@ func acquireDaemonLock() (release func(), locked bool, err error) {
 		return nil, false, err
 	}
 	return func() { _ = windows.CloseHandle(h) }, true, nil
+}
+
+// takeOverIncumbent is unix-only (there is no invisible-tray failure mode to
+// heal on Windows); callers gate on GOOS, this stub only satisfies the build.
+func takeOverIncumbent(logger *log.Logger) (release func(), locked bool) {
+	return nil, false
 }

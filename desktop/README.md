@@ -34,9 +34,19 @@ cached token simply means "Log in to start syncing" in the menu. Logging in open
 device-code approval; the username shown comes from the server's whoami endpoint, which doubles
 as the token-validity probe.
 
+One exception to "never prompt": the very first time the daemon runs on a machine with no
+login, it opens the browser approval on its own. macOS hides menu-bar icons when the bar is
+full, so on a fresh install the tray's "Log in" may not be visible at all — the one-shot prompt
+lets the install start working anyway. A `login-prompted` stamp in the config dir guarantees it
+never fires again, so logging out (or closing the browser tab) sticks.
+
 The daemon logs to `~/Library/Logs/aiscan/daemon.log` on macOS (elsewhere:
 `<user-cache>/aiscan/logs/daemon.log`) — the first place to look when a machine "isn't
-syncing". A file lock guarantees a single instance; a second launch just says so and exits.
+syncing". A file lock guarantees a single instance. On macOS a second launch *wins*: it
+restarts the incumbent (via `launchctl kickstart -k` when launchd owns it, else by terminating
+the pid recorded in the lock file and taking the lock) — so launching a freshly installed
+version always replaces a running daemon, even one whose icon a stale registration has hidden.
+Elsewhere a second launch just says so and exits.
 
 ## macOS app (the pilot install)
 
@@ -48,7 +58,9 @@ app bundle (`LSUIElement`). A double-click with no argv runs the daemon. Install
    user to move it rather than half-working).
 2. Launch **Aiscan** from `/Applications`. The app is Developer ID signed, notarized, and
    stapled, so it opens on first double-click with no Gatekeeper prompt.
-3. Success looks like: nothing opens, but the aiscan bars icon appears in the menu bar.
+3. Success looks like: the aiscan bars icon appears in the menu bar and the browser opens the
+   log-in approval page (first launch only; the icon can be hidden if the menu bar is full, but
+   the login still works).
 
 Releases are only signed/notarized when the Apple secrets are configured in CI (see
 `packaging/macos/`); a build without them falls back to an ad-hoc signature, which on first
@@ -80,12 +92,20 @@ process usually exits before the download finishes, a pending-update marker is w
 the next run applies it, then re-execs so it already runs the new version (two-phase, ported
 from the sx CLI).
 
-The resident daemon re-runs the same throttled check on a ticker and, after a successful swap,
-re-execs itself at the next idle point to adopt the new binary — the OS supervisor is only for
-crash recovery, not update adoption.
+The resident daemon re-runs the same throttled check on a ticker and restarts itself at the
+next idle point to adopt the new binary — the OS supervisor is only for crash recovery, not
+update adoption. The restart is an exec-in-place, except the macOS daemon, which spawns a
+successor process and exits: an exec'd process keeps its stale LaunchServices registration and
+its menu-bar icon silently never appears. As a backstop (daemons upgrading *from* a version
+that still exec'd in place, and any future path that execs the daemon), the first start of each
+version on macOS bounces once into a freshly launched process — via a non-zero exit when
+launchd owns the process (KeepAlive relaunches it, keeping crash supervision), a spawned
+successor otherwise.
 
 - `AISCAN_DISABLE_AUTOUPDATER=1` turns the background updater off; `aiscan update` still works.
-- Dev builds (version `dev` or `-dirty`) never self-update.
+- Dev builds never self-update: version `dev`, `-dirty`, or a git-describe suffix (`X.Y.Z-N-g<hash>`,
+  a commit past the release tag — semver reads it as a *prerelease* of X.Y.Z, so updating would
+  quietly replace a test build with the older official release).
 - State lives in the user cache dir (`~/.cache/aiscan` on Linux, `~/Library/Caches/aiscan` on
   macOS): `last-update-check` (throttle) and `pending-update.json` (marker).
 

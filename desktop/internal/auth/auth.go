@@ -130,7 +130,11 @@ func OpenBrowser(target string) error {
 // tests and for non-default setups); otherwise it lives under the OS config dir.
 // ---------------------------------------------------------------------------
 
-func configDir() (string, error) {
+// ConfigDir is the directory holding the client's persistent per-user state
+// (the token cache lives here). AISCAN_CONFIG_DIR overrides the location;
+// otherwise it is `aiscan` under the OS config dir. Exported so other packages
+// that need a stamp file next to the token resolve the same directory.
+func ConfigDir() (string, error) {
 	if d := os.Getenv("AISCAN_CONFIG_DIR"); d != "" {
 		return d, nil
 	}
@@ -142,7 +146,7 @@ func configDir() (string, error) {
 }
 
 func tokenPath() (string, error) {
-	d, err := configDir()
+	d, err := ConfigDir()
 	if err != nil {
 		return "", err
 	}

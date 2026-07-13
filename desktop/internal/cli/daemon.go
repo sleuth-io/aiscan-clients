@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sleuth-io/aiscan-clients/desktop/internal/autoupdate"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/buildinfo"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/tray"
 )
@@ -70,21 +71,60 @@ func Daemon(args []string) error {
 		return fmt.Errorf("open log: %w", err)
 	}
 	// When run interactively (testing), tee the log to stderr.
+	interactive := false
 	if info, err := os.Stderr.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+		interactive = true
 		logW = io.MultiWriter(logW, os.Stderr)
 	}
 	logger := log.New(logW, "", log.LstdFlags)
+
+	// First start of each version, bounce into a freshly launched process so
+	// the tray never renders under a stale LaunchServices registration (see
+	// registration.go) — in particular this heals the final exec-in-place
+	// restart a pre-fix daemon used to adopt this very update. Must run
+	// before the single-instance lock so the successor can take it. A
+	// terminal run is freshly launched by definition and skips the hop (a
+	// Setsid successor would also escape the terminal's Ctrl-C); headless
+	// runs have no tray to protect.
+	if runtime.GOOS == "darwin" && !*noTray && !interactive && !translocated(exe) &&
+		claimRegistrationBounce(buildinfo.Version) {
+		if launchdOwnsDaemon() {
+			logger.Printf("first start of %s under launchd; exiting for a fresh relaunch", buildinfo.Version)
+			os.Exit(1) // KeepAlive relaunches a fresh, still-supervised process
+		}
+		logger.Printf("first start of %s; respawning fresh", buildinfo.Version)
+		if err := autoupdate.Respawn(exe); err == nil {
+			return nil
+		} else {
+			logger.Printf("respawn: %v; continuing in place", err)
+		}
+	}
 
 	release, locked, err := acquireDaemonLock()
 	if err != nil {
 		logger.Printf("single-instance lock unavailable (%v); continuing unguarded", err)
 	} else if !locked {
-		const msg = "aiscan is already running — look for its icon in the menu bar."
-		fmt.Fprintln(os.Stderr, msg)
-		if fromAppBundle(exe) {
-			alert(msg)
+		// Another daemon holds the lock — possibly invisibly (a stale
+		// LaunchServices registration hides its icon) and possibly an older
+		// binary than the one the user just installed and launched. Refusing
+		// with "look for its icon" would be a dead end, so on macOS the
+		// user's launch wins: restart the incumbent through launchd when it
+		// owns it (relaunching the on-disk — new — binary, still
+		// supervised), otherwise terminate it and take over its lock.
+		if runtime.GOOS == "darwin" {
+			if restartIncumbentViaLaunchd(logger) {
+				return nil
+			}
+			release, locked = takeOverIncumbent(logger)
 		}
-		return nil
+		if !locked {
+			const msg = "aiscan is already running. If you don't see its icon in the menu bar, log out and back in, then launch it again."
+			fmt.Fprintln(os.Stderr, msg)
+			if fromAppBundle(exe) {
+				alert(msg)
+			}
+			return nil
+		}
 	}
 	if release != nil {
 		defer release()
@@ -110,6 +150,9 @@ func Daemon(args []string) error {
 		buildinfo.Version, *instance, *interval, logPath, !*noTray)
 
 	a := newAgent(*instance, exe, *interval, logger, logW)
+	// Hand the agent the lock release so a macOS update restart can pass the
+	// single-instance lock to its spawned successor (agent.restart).
+	a.releaseLock = release
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

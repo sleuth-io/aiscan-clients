@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log"
+	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,9 +39,13 @@ type agent struct {
 	syncReq       chan struct{} // manual "Sync now": upload what the plan says is missing
 	forceReq      chan struct{} // manual "Sync all": re-upload everything, ignoring coverage
 	loginInFlight atomic.Bool
-	// restartPending: an update was swapped on disk; Reexec at the next idle
+	// restartPending: an update was swapped on disk; restart at the next idle
 	// point so the running image catches up.
 	restartPending bool
+	// releaseLock hands the single-instance lock to a respawned successor
+	// (the macOS restart path); set by Daemon after acquiring it, only used
+	// on the run-loop goroutine.
+	releaseLock func()
 }
 
 func newAgent(instance, exe string, interval time.Duration, logger *log.Logger, logW io.Writer) *agent {
@@ -63,6 +69,14 @@ func (a *agent) States() <-chan tray.State { return a.states }
 // goroutine when a tray owns the main one.
 func (a *agent) run(ctx context.Context) {
 	a.refreshIdentity(ctx)
+
+	// One-shot: on the very first run of a fresh install with no login, open
+	// the browser approval unprompted. The tray icon can be hidden on a full
+	// macOS menu bar, so this may be the only login affordance the user sees.
+	if claimFirstRunLogin(a.instance) {
+		a.logger.Printf("first run with no login; starting browser login")
+		a.LogIn()
+	}
 
 	// First sync shortly after startup rather than a full interval later — a
 	// freshly installed daemon should visibly do something.
@@ -89,10 +103,11 @@ func (a *agent) run(ctx context.Context) {
 			a.checkUpdate()
 		}
 		// The loop is single-threaded, so between events we are idle — the
-		// safe point to adopt a swapped binary. Reexec only returns on failure.
+		// safe point to adopt a swapped binary. restart only returns on
+		// failure.
 		if a.restartPending {
 			a.logger.Printf("restarting to adopt update")
-			autoupdate.Reexec(a.exe)
+			a.restart()
 			a.restartPending = false
 			a.logger.Printf("restart failed; continuing on old version")
 		}
@@ -146,6 +161,32 @@ func (a *agent) syncOnce(ctx context.Context, manual, force bool) {
 	default:
 		a.logger.Printf("sync finished")
 	}
+}
+
+// restart adopts a swapped binary; it only returns on failure. On macOS,
+// exec-in-place would keep the pid but lose the tray icon — the exec'd image
+// drops its LaunchServices registration and its status item never appears —
+// so the daemon releases the single-instance lock, spawns a successor, and
+// exits. Elsewhere exec-in-place is right: the pid survives for supervisors
+// and there is nothing graphical to lose.
+func (a *agent) restart() {
+	if runtime.GOOS != "darwin" {
+		autoupdate.Reexec(a.exe)
+		return
+	}
+	// Release before spawning so the successor can't lose the lock race and
+	// bail out as "already running". If the spawn then fails we continue
+	// unguarded — the same degraded mode as failing to acquire the lock at
+	// startup.
+	if a.releaseLock != nil {
+		a.releaseLock()
+		a.releaseLock = nil
+	}
+	if err := autoupdate.Respawn(a.exe); err != nil {
+		a.logger.Printf("respawn: %v", err)
+		return
+	}
+	os.Exit(0)
 }
 
 func (a *agent) checkUpdate() {
@@ -213,8 +254,9 @@ func (a *agent) SetPaused(p bool) {
 }
 
 // LogIn runs the device-code flow on its own goroutine (approval can take
-// minutes) and opens the browser to the approval page. The daemon never
-// triggers this on its own — only the user, via the menu.
+// minutes) and opens the browser to the approval page. Triggered by the user
+// via the menu, plus exactly once by the daemon itself on a fresh install's
+// first run (claimFirstRunLogin) — never on any later start.
 func (a *agent) LogIn() {
 	if !a.loginInFlight.CompareAndSwap(false, true) {
 		return
