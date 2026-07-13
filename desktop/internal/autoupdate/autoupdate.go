@@ -18,6 +18,7 @@ package autoupdate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -205,27 +206,42 @@ func ClearPendingUpdate() {
 // command the user actually ran.
 func CheckAndUpdateInBackground() {
 	go func() {
-		_, _ = checkAndUpdate()
+		_, _ = checkAndUpdate(false)
 	}()
 }
 
 // Check runs the throttled update check synchronously and reports whether a
 // new binary was swapped into place. The daemon calls this on a ticker; a true
 // result means the on-disk binary is newer than the running image, so the
-// caller should restart (Reexec) at its next idle point to adopt it.
+// caller should restart at its next idle point to adopt it.
 func Check() (updated bool, err error) {
-	return checkAndUpdate()
+	return checkAndUpdate(false)
+}
+
+// CheckNow is Check without the daily throttle — the user explicitly asked
+// (the tray's "Check for updates"), so "I already checked today" is not an
+// answer. The dev-build and kill-switch guards still hold and are reported as
+// errors rather than silently skipped: an explicit ask deserves a reason.
+func CheckNow() (updated bool, err error) {
+	if Disabled() {
+		return false, errors.New("autoupdater disabled (" + disableEnv + ")")
+	}
+	if isDevBuild() {
+		return false, errors.New("dev build (" + buildinfo.Version + "); update from a release")
+	}
+	return checkAndUpdate(true)
 }
 
 // checkAndUpdate is phase 1: detect the latest release, write the marker,
 // then attempt the swap inline. If the process exits mid-download the marker
-// survives for ApplyPendingUpdate. Returns whether the swap completed.
-func checkAndUpdate() (bool, error) {
+// survives for ApplyPendingUpdate. Returns whether the swap completed. force
+// skips the daily throttle (but never the dev-build or kill-switch guards).
+func checkAndUpdate(force bool) (bool, error) {
 	if Disabled() || isDevBuild() {
 		return false, nil
 	}
 
-	if !shouldCheck() {
+	if !force && !shouldCheck() {
 		return false, nil
 	}
 

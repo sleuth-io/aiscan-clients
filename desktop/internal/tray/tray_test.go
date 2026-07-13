@@ -46,4 +46,14 @@ func TestStatusLinePriority(t *testing.T) {
 	if got := statusLine(State{LastSync: time.Time{}}); got != "" {
 		t.Fatalf("statusLine = %q, want empty", got)
 	}
+	// A manual update check's note outranks a stale error (the user just
+	// asked), but never active syncing.
+	st = State{Username: "u", UpdateNote: "Up to date (1.0.0)", LastErr: "boom"}
+	if got := statusLine(st); got != "Up to date (1.0.0)" {
+		t.Fatalf("statusLine = %q, want the update note", got)
+	}
+	st.Syncing = true
+	if got := statusLine(st); got != "Syncing…" {
+		t.Fatalf("statusLine = %q, want Syncing…", got)
+	}
 }
