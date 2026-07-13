@@ -104,12 +104,27 @@ func Daemon(args []string) error {
 	if err != nil {
 		logger.Printf("single-instance lock unavailable (%v); continuing unguarded", err)
 	} else if !locked {
-		const msg = "aiscan is already running — look for its icon in the menu bar."
-		fmt.Fprintln(os.Stderr, msg)
-		if fromAppBundle(exe) {
-			alert(msg)
+		// Another daemon holds the lock — possibly invisibly (a stale
+		// LaunchServices registration hides its icon) and possibly an older
+		// binary than the one the user just installed and launched. Refusing
+		// with "look for its icon" would be a dead end, so on macOS the
+		// user's launch wins: restart the incumbent through launchd when it
+		// owns it (relaunching the on-disk — new — binary, still
+		// supervised), otherwise terminate it and take over its lock.
+		if runtime.GOOS == "darwin" {
+			if restartIncumbentViaLaunchd(logger) {
+				return nil
+			}
+			release, locked = takeOverIncumbent(logger)
 		}
-		return nil
+		if !locked {
+			const msg = "aiscan is already running. If you don't see its icon in the menu bar, log out and back in, then launch it again."
+			fmt.Fprintln(os.Stderr, msg)
+			if fromAppBundle(exe) {
+				alert(msg)
+			}
+			return nil
+		}
 	}
 	if release != nil {
 		defer release()

@@ -42,7 +42,11 @@ never fires again, so logging out (or closing the browser tab) sticks.
 
 The daemon logs to `~/Library/Logs/aiscan/daemon.log` on macOS (elsewhere:
 `<user-cache>/aiscan/logs/daemon.log`) — the first place to look when a machine "isn't
-syncing". A file lock guarantees a single instance; a second launch just says so and exits.
+syncing". A file lock guarantees a single instance. On macOS a second launch *wins*: it
+restarts the incumbent (via `launchctl kickstart -k` when launchd owns it, else by terminating
+the pid recorded in the lock file and taking the lock) — so launching a freshly installed
+version always replaces a running daemon, even one whose icon a stale registration has hidden.
+Elsewhere a second launch just says so and exits.
 
 ## macOS app (the pilot install)
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,18 +61,45 @@ func claimRegistrationBounce(version string) bool {
 // launchdJobPid matches the running job's pid in `launchctl print` output.
 var launchdJobPid = regexp.MustCompile(`(?m)^\s*pid = (\d+)\b`)
 
+// launchdDaemonPid returns the pid of the launchd user agent's running job,
+// or 0 when the job isn't running (or launchctl is unavailable).
+func launchdDaemonPid() int {
+	out, err := exec.Command("launchctl", "print",
+		fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)).Output()
+	if err != nil {
+		return 0
+	}
+	return parseLaunchdPid(out)
+}
+
 // launchdOwnsDaemon reports whether launchd's user agent job is this very
 // process. True both when launchd started us and when an old binary exec'd
 // over the process launchd started — exec preserves the pid launchd tracks.
 // When true, exiting non-zero is the best restart: KeepAlive relaunches a
 // fresh process that stays under launchd's crash supervision.
 func launchdOwnsDaemon() bool {
-	out, err := exec.Command("launchctl", "print",
-		fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)).Output()
-	if err != nil {
+	return launchdDaemonPid() == os.Getpid()
+}
+
+// restartIncumbentViaLaunchd hands a "daemon already running" launch back to
+// launchd. When the incumbent is launchd's job — even an invisible one; a
+// stale registration hides the icon but launchd still tracks the pid —
+// `kickstart -k` kills it and relaunches whatever binary is on disk *now*,
+// which after a manual reinstall is the newly installed version, still under
+// crash supervision. Reports whether the handoff happened; the caller then
+// simply exits.
+func restartIncumbentViaLaunchd(logger *log.Logger) bool {
+	pid := launchdDaemonPid()
+	if pid == 0 || pid == os.Getpid() {
 		return false
 	}
-	return parseLaunchdPid(out) == os.Getpid()
+	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)
+	if err := exec.Command("launchctl", "kickstart", "-k", target).Run(); err != nil {
+		logger.Printf("kickstart %s: %v", target, err)
+		return false
+	}
+	logger.Printf("restarted the running daemon (pid %d) via launchd to adopt this launch", pid)
+	return true
 }
 
 // parseLaunchdPid extracts the job's running pid from `launchctl print`
