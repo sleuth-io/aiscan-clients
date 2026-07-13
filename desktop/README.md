@@ -92,7 +92,11 @@ The resident daemon re-runs the same throttled check on a ticker and restarts it
 next idle point to adopt the new binary — the OS supervisor is only for crash recovery, not
 update adoption. The restart is an exec-in-place, except the macOS daemon, which spawns a
 successor process and exits: an exec'd process keeps its stale LaunchServices registration and
-its menu-bar icon silently never appears.
+its menu-bar icon silently never appears. As a backstop (daemons upgrading *from* a version
+that still exec'd in place, and any future path that execs the daemon), the first start of each
+version on macOS bounces once into a freshly launched process — via a non-zero exit when
+launchd owns the process (KeepAlive relaunches it, keeping crash supervision), a spawned
+successor otherwise.
 
 - `AISCAN_DISABLE_AUTOUPDATER=1` turns the background updater off; `aiscan update` still works.
 - Dev builds never self-update: version `dev`, `-dirty`, or a git-describe suffix (`X.Y.Z-N-g<hash>`,

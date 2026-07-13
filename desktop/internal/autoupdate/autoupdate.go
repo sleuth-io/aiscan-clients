@@ -78,9 +78,11 @@ func isDevBuild() bool {
 	return v == "dev" || v == "" || strings.Contains(v, "-dirty") || describeAhead.MatchString(v)
 }
 
-// cacheDir returns the directory holding autoupdate state, honoring the
-// AISCAN_CACHE_DIR override (tests) like auth's AISCAN_CONFIG_DIR.
-func cacheDir() (string, error) {
+// CacheDir returns the directory holding autoupdate state, honoring the
+// AISCAN_CACHE_DIR override (tests) like auth's AISCAN_CONFIG_DIR. Exported
+// for update-adjacent state kept by other packages (the daemon's per-version
+// registration-bounce stamp).
+func CacheDir() (string, error) {
 	if dir := os.Getenv("AISCAN_CACHE_DIR"); dir != "" {
 		return dir, nil
 	}
@@ -92,7 +94,7 @@ func cacheDir() (string, error) {
 }
 
 func pendingUpdatePath() (string, error) {
-	dir, err := cacheDir()
+	dir, err := CacheDir()
 	if err != nil {
 		return "", err
 	}
@@ -285,7 +287,7 @@ func writePendingUpdate(release *selfupdate.Release) error {
 // shouldCheck reports whether the last check was more than checkInterval ago,
 // tracked via the throttle file's mtime.
 func shouldCheck() bool {
-	dir, err := cacheDir()
+	dir, err := CacheDir()
 	if err != nil {
 		return true
 	}
@@ -297,7 +299,7 @@ func shouldCheck() bool {
 }
 
 func updateCheckTimestamp() error {
-	dir, err := cacheDir()
+	dir, err := CacheDir()
 	if err != nil {
 		return err
 	}
