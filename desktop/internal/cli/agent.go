@@ -64,6 +64,14 @@ func (a *agent) States() <-chan tray.State { return a.states }
 func (a *agent) run(ctx context.Context) {
 	a.refreshIdentity(ctx)
 
+	// One-shot: on the very first run of a fresh install with no login, open
+	// the browser approval unprompted. The tray icon can be hidden on a full
+	// macOS menu bar, so this may be the only login affordance the user sees.
+	if claimFirstRunLogin(a.instance) {
+		a.logger.Printf("first run with no login; starting browser login")
+		a.LogIn()
+	}
+
 	// First sync shortly after startup rather than a full interval later — a
 	// freshly installed daemon should visibly do something.
 	first := time.NewTimer(15 * time.Second)
@@ -213,8 +221,9 @@ func (a *agent) SetPaused(p bool) {
 }
 
 // LogIn runs the device-code flow on its own goroutine (approval can take
-// minutes) and opens the browser to the approval page. The daemon never
-// triggers this on its own — only the user, via the menu.
+// minutes) and opens the browser to the approval page. Triggered by the user
+// via the menu, plus exactly once by the daemon itself on a fresh install's
+// first run (claimFirstRunLogin) — never on any later start.
 func (a *agent) LogIn() {
 	if !a.loginInFlight.CompareAndSwap(false, true) {
 		return

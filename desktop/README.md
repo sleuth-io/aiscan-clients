@@ -34,6 +34,12 @@ cached token simply means "Log in to start syncing" in the menu. Logging in open
 device-code approval; the username shown comes from the server's whoami endpoint, which doubles
 as the token-validity probe.
 
+One exception to "never prompt": the very first time the daemon runs on a machine with no
+login, it opens the browser approval on its own. macOS hides menu-bar icons when the bar is
+full, so on a fresh install the tray's "Log in" may not be visible at all — the one-shot prompt
+lets the install start working anyway. A `login-prompted` stamp in the config dir guarantees it
+never fires again, so logging out (or closing the browser tab) sticks.
+
 The daemon logs to `~/Library/Logs/aiscan/daemon.log` on macOS (elsewhere:
 `<user-cache>/aiscan/logs/daemon.log`) — the first place to look when a machine "isn't
 syncing". A file lock guarantees a single instance; a second launch just says so and exits.
@@ -48,7 +54,9 @@ app bundle (`LSUIElement`). A double-click with no argv runs the daemon. Install
    user to move it rather than half-working).
 2. Launch **Aiscan** from `/Applications`. The app is Developer ID signed, notarized, and
    stapled, so it opens on first double-click with no Gatekeeper prompt.
-3. Success looks like: nothing opens, but the aiscan bars icon appears in the menu bar.
+3. Success looks like: the aiscan bars icon appears in the menu bar and the browser opens the
+   log-in approval page (first launch only; the icon can be hidden if the menu bar is full, but
+   the login still works).
 
 Releases are only signed/notarized when the Apple secrets are configured in CI (see
 `packaging/macos/`); a build without them falls back to an ad-hoc signature, which on first
