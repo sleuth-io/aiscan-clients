@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -63,11 +64,18 @@ func Disabled() bool {
 	return false
 }
 
+// describeAhead matches a version stamped from a commit past the release tag
+// (`git describe` → e.g. 0.2.2-1-g2eb714a). Semver reads that suffix as a
+// prerelease of 0.2.2 — *below* the released 0.2.2 — so without this the
+// updater would "upgrade" such a build back to the official release.
+var describeAhead = regexp.MustCompile(`-\d+-g[0-9a-f]+$`)
+
 // isDevBuild reports whether this binary was built outside the release
-// pipeline (plain `go build`, or a dirty tree) and so must never self-update.
+// pipeline (plain `go build`, a dirty tree, or a commit past the latest
+// release tag) and so must never self-update.
 func isDevBuild() bool {
 	v := buildinfo.Version
-	return v == "dev" || v == "" || strings.Contains(v, "-dirty")
+	return v == "dev" || v == "" || strings.Contains(v, "-dirty") || describeAhead.MatchString(v)
 }
 
 // cacheDir returns the directory holding autoupdate state, honoring the
