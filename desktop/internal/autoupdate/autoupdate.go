@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -218,16 +219,22 @@ func Check() (updated bool, err error) {
 	return checkAndUpdate(false)
 }
 
+// ErrUnavailable marks a CheckNow refusal that is a build/configuration
+// state, not a failure — dev builds and the kill switch. Callers should
+// present these as information (errors.Is), not as errors: nothing is broken.
+var ErrUnavailable = errors.New("updates unavailable")
+
 // CheckNow is Check without the daily throttle — the user explicitly asked
 // (the tray's "Check for updates"), so "I already checked today" is not an
-// answer. The dev-build and kill-switch guards still hold and are reported as
-// errors rather than silently skipped: an explicit ask deserves a reason.
+// answer. The dev-build and kill-switch guards still hold and are reported
+// (wrapping ErrUnavailable) rather than silently skipped: an explicit ask
+// deserves a reason.
 func CheckNow() (updated bool, err error) {
 	if Disabled() {
-		return false, errors.New("autoupdater disabled (" + disableEnv + ")")
+		return false, fmt.Errorf("%w: autoupdater disabled (%s)", ErrUnavailable, disableEnv)
 	}
 	if isDevBuild() {
-		return false, errors.New("dev build (" + buildinfo.Version + "); update from a release")
+		return false, fmt.Errorf("%w: dev build (%s); update from a release", ErrUnavailable, buildinfo.Version)
 	}
 	return checkAndUpdate(true)
 }

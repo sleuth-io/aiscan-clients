@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -224,6 +225,13 @@ func (a *agent) checkUpdateNow() {
 	a.logger.Printf("manual update check")
 	updated, err := autoupdate.CheckNow()
 	switch {
+	case errors.Is(err, autoupdate.ErrUnavailable):
+		// A guard, not a failure (dev build, kill switch): show it like "Up
+		// to date" — an informational note that clears — not a Problem line
+		// that lingers until the next sync.
+		reason := strings.TrimPrefix(err.Error(), autoupdate.ErrUnavailable.Error()+": ")
+		a.setUpdateNoteBriefly("Updates are off: " + reason)
+		a.logger.Printf("manual update check: %v", err)
 	case err != nil:
 		a.setState(func(s *tray.State) { s.UpdateNote = ""; s.LastErr = "update check failed: " + err.Error() })
 		a.logger.Printf("manual update check: %v", err)
