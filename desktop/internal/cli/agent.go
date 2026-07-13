@@ -7,12 +7,14 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/auth"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/autoupdate"
+	"github.com/sleuth-io/aiscan-clients/desktop/internal/buildinfo"
 	"github.com/sleuth-io/aiscan-clients/desktop/internal/tray"
 )
 
@@ -38,6 +40,7 @@ type agent struct {
 	states        chan tray.State
 	syncReq       chan struct{} // manual "Sync now": upload what the plan says is missing
 	forceReq      chan struct{} // manual "Sync all": re-upload everything, ignoring coverage
+	updateReq     chan struct{} // manual "Check for updates": bypass the daily throttle
 	loginInFlight atomic.Bool
 	// restartPending: an update was swapped on disk; restart at the next idle
 	// point so the running image catches up.
@@ -50,14 +53,15 @@ type agent struct {
 
 func newAgent(instance, exe string, interval time.Duration, logger *log.Logger, logW io.Writer) *agent {
 	return &agent{
-		instance: instance,
-		exe:      exe,
-		interval: interval,
-		logger:   logger,
-		logW:     logW,
-		states:   make(chan tray.State, 1),
-		syncReq:  make(chan struct{}, 1),
-		forceReq: make(chan struct{}, 1),
+		instance:  instance,
+		exe:       exe,
+		interval:  interval,
+		logger:    logger,
+		logW:      logW,
+		states:    make(chan tray.State, 1),
+		syncReq:   make(chan struct{}, 1),
+		forceReq:  make(chan struct{}, 1),
+		updateReq: make(chan struct{}, 1),
 	}
 }
 
@@ -84,6 +88,12 @@ func (a *agent) run(ctx context.Context) {
 	defer first.Stop()
 	ticker := time.NewTicker(a.interval)
 	defer ticker.Stop()
+	// The daemon owns its startup update check (main skips its fire-and-forget
+	// one for daemon runs): the result must land in restartPending, or a
+	// launch-triggered swap would restart nothing and the daemon would run an
+	// already-replaced binary until the throttle reopened a day later.
+	firstUpdate := time.NewTimer(30 * time.Second)
+	defer firstUpdate.Stop()
 	updates := time.NewTicker(updateCheckInterval)
 	defer updates.Stop()
 
@@ -99,8 +109,12 @@ func (a *agent) run(ctx context.Context) {
 			a.syncOnce(ctx, true, false)
 		case <-a.forceReq:
 			a.syncOnce(ctx, true, true)
+		case <-firstUpdate.C:
+			a.checkUpdate()
 		case <-updates.C:
 			a.checkUpdate()
+		case <-a.updateReq:
+			a.checkUpdateNow()
 		}
 		// The loop is single-threaded, so between events we are idle — the
 		// safe point to adopt a swapped binary. restart only returns on
@@ -201,6 +215,53 @@ func (a *agent) checkUpdate() {
 	}
 }
 
+// checkUpdateNow serves the tray's "Check for updates": no daily throttle,
+// and the outcome — including "you're current" — is surfaced in the menu's
+// status line, because the user explicitly asked. Runs on the loop goroutine
+// like every other mutation; a found update restarts at the loop's idle point
+// moments later.
+func (a *agent) checkUpdateNow() {
+	a.setState(func(s *tray.State) { s.UpdateNote = "Checking for updates…" })
+	a.logger.Printf("manual update check")
+	updated, err := autoupdate.CheckNow()
+	switch {
+	case errors.Is(err, autoupdate.ErrUnavailable):
+		// A guard, not a failure (dev build, kill switch): show it like "Up
+		// to date" — an informational note that clears — not a Problem line
+		// that lingers until the next sync.
+		reason := strings.TrimPrefix(err.Error(), autoupdate.ErrUnavailable.Error()+": ")
+		a.setUpdateNoteBriefly("Updates are off: " + reason)
+		a.logger.Printf("manual update check: %v", err)
+	case err != nil:
+		a.setState(func(s *tray.State) { s.UpdateNote = ""; s.LastErr = "update check failed: " + err.Error() })
+		a.logger.Printf("manual update check: %v", err)
+	case updated:
+		// No need to clear this note: the restart that follows replaces the
+		// whole process, state and all.
+		a.setState(func(s *tray.State) { s.UpdateNote = "Update downloaded — restarting…" })
+		a.logger.Printf("update downloaded; restarting when idle")
+		a.restartPending = true
+	default:
+		a.setUpdateNoteBriefly("Up to date (" + buildinfo.Version + ")")
+		a.logger.Printf("manual update check: up to date")
+	}
+}
+
+// setUpdateNoteBriefly shows note in the status line and clears it after a
+// beat — long enough to read, short enough that the menu goes back to showing
+// live sync state. The equality guard keeps a stale timer from wiping a newer
+// note.
+func (a *agent) setUpdateNoteBriefly(note string) {
+	a.setState(func(s *tray.State) { s.UpdateNote = note })
+	time.AfterFunc(15*time.Second, func() {
+		a.setState(func(s *tray.State) {
+			if s.UpdateNote == note {
+				s.UpdateNote = ""
+			}
+		})
+	})
+}
+
 // refreshIdentity resolves the username for the cached token, if any, so the
 // tray can show who is logged in across daemon restarts.
 func (a *agent) refreshIdentity(ctx context.Context) {
@@ -282,6 +343,15 @@ func (a *agent) LogIn() {
 		a.logger.Printf("logged in as %s", user)
 		a.SyncNow()
 	}()
+}
+
+// CheckForUpdates queues a manual, throttle-bypassing update check; a no-op
+// if one is already queued.
+func (a *agent) CheckForUpdates() {
+	select {
+	case a.updateReq <- struct{}{}:
+	default:
+	}
 }
 
 func (a *agent) LogOut() {

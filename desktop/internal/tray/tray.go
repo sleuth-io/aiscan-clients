@@ -29,11 +29,12 @@ var iconLightPNG []byte
 // State is one renderable snapshot of the agent. The zero value means
 // "starting up, not logged in".
 type State struct {
-	Username string    // empty = not logged in
-	Paused   bool      // scheduled syncs are skipped
-	Syncing  bool      // a sync pass is running right now
-	LastSync time.Time // zero = never synced since start
-	LastErr  string    // last sync/login failure, cleared on success
+	Username   string    // empty = not logged in
+	Paused     bool      // scheduled syncs are skipped
+	Syncing    bool      // a sync pass is running right now
+	LastSync   time.Time // zero = never synced since start
+	LastErr    string    // last sync/login failure, cleared on success
+	UpdateNote string    // progress/outcome of a manual update check, transient
 }
 
 // Actions is what the menu can ask the agent to do. Implementations must not
@@ -44,6 +45,7 @@ type Actions interface {
 	SetPaused(bool)
 	LogIn()
 	LogOut()
+	CheckForUpdates()
 	Quit()
 }
 
@@ -75,6 +77,7 @@ func onReady(a Actions, states <-chan State, version string) {
 	logout := systray.AddMenuItem("Log out", "Forget this machine's authorization")
 	logout.Hide()
 	systray.AddSeparator()
+	checkUpdates := systray.AddMenuItem("Check for updates", "Check for a newer aiscan right now and install it")
 	ver := systray.AddMenuItem("aiscan "+version, "")
 	ver.Disable()
 	quit := systray.AddMenuItem("Quit aiscan", "Stop capturing until reopened")
@@ -95,6 +98,8 @@ func onReady(a Actions, states <-chan State, version string) {
 				a.LogIn()
 			case <-logout.ClickedCh:
 				a.LogOut()
+			case <-checkUpdates.ClickedCh:
+				a.CheckForUpdates()
 			case <-quit.ClickedCh:
 				a.Quit()
 				systray.Quit()
@@ -147,6 +152,8 @@ func statusLine(st State) string {
 	switch {
 	case st.Syncing:
 		return "Syncing…"
+	case st.UpdateNote != "":
+		return st.UpdateNote
 	case st.LastErr != "":
 		return "Problem: " + truncate(oneLine(st.LastErr), maxStatusLen)
 	case st.Username == "":

@@ -2,6 +2,7 @@ package autoupdate
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,12 +85,31 @@ func TestCheckAndUpdateDevBuild(t *testing.T) {
 	useTempCache(t)
 	setVersion(t, "dev")
 
-	updated, err := checkAndUpdate()
+	updated, err := checkAndUpdate(false)
 	if err != nil {
 		t.Errorf("expected dev build to be a silent no-op, got: %v", err)
 	}
 	if updated {
 		t.Error("expected dev build to never report an update")
+	}
+}
+
+func TestCheckNowGuards(t *testing.T) {
+	useTempCache(t)
+
+	// The explicit check reports why it won't run instead of silently
+	// no-oping like the background one — the user asked and deserves a
+	// reason. Guards wrap ErrUnavailable (informational, not a failure) and
+	// fire before any network access.
+	setVersion(t, "0.2.2-1-gabcdef0")
+	if _, err := CheckNow(); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("dev build: err = %v, want ErrUnavailable", err)
+	}
+
+	setVersion(t, "0.2.2")
+	t.Setenv("AISCAN_DISABLE_AUTOUPDATER", "1")
+	if _, err := CheckNow(); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("autoupdater disabled: err = %v, want ErrUnavailable", err)
 	}
 }
 

@@ -32,8 +32,18 @@ func main() {
 			autoupdate.Reexec(exe)
 		}
 	}
-	// Daily background check, unless the user is updating explicitly.
-	if len(os.Args) < 2 || os.Args[1] != "update" {
+	// Daily background check — except when the user is updating explicitly,
+	// and except for daemon runs: the daemon runs its own startup check from
+	// the agent loop, where the result lands in restartPending and schedules
+	// the restart that adopts the swap. A fire-and-forget check here would
+	// swap the binary and restart nothing (and consume the daily throttle,
+	// blocking the agent's check for another day).
+	verb := ""
+	if len(os.Args) > 1 {
+		verb = os.Args[1]
+	}
+	isDaemon := verb == "daemon" || (verb == "" && cli.LaunchedFromAppBundle())
+	if verb != "update" && !isDaemon {
 		autoupdate.CheckAndUpdateInBackground()
 	}
 
