@@ -307,7 +307,7 @@
   // Persist immediately on every change — there is no Save button.
   const persist = () => chrome.storage.local.set({ config: cfg });
 
-  // Pulse instance — dev only. Commits on blur/Enter, not per keystroke.
+  // Pulse instance. Commits on blur/Enter, not per keystroke.
   const instanceHeader = mkLabel("Pulse instance");
   const instanceHint = mkHint(
     "Where uploads go. e.g. http://dev.pulse.sleuth.io for local dev, https://app.skills.new for production.",
@@ -318,7 +318,7 @@
     style: fieldCss + ";width:100%;font:12px ui-monospace,Menlo,monospace",
   });
 
-  // Account — Sign out lives behind dev mode (most users never need it).
+  // Account — Sign out.
   const signoutBtn = el("button", {
     text: "Sign out",
     style:
@@ -332,21 +332,6 @@
     "Authorization happens automatically on your first scan (an approval tab opens). Sign out clears the cached token — use it after switching instances.",
   );
 
-  // Subtle dev-mode toggle: reveals the instance field + all help text.
-  const devCheck = el("input", {
-    type: "checkbox",
-    style: "margin:0;accent-color:#6a6a70;cursor:pointer",
-  });
-  const devToggle = el(
-    "label",
-    {
-      style:
-        "display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:12px;" +
-        "padding-top:10px;border-top:1px solid #2c2c30;color:#6a6a70;font-size:11px;cursor:pointer",
-    },
-    [devCheck, el("span", { text: "Developer mode" })],
-  );
-
   // Compose the panel in display order, then mount it once.
   [
     instanceHeader,
@@ -355,7 +340,6 @@
     signoutBtn,
     savedNote,
     signoutHint,
-    devToggle,
   ].forEach((n) => settings.appendChild(n));
   document.documentElement.appendChild(settings);
 
@@ -396,25 +380,6 @@
     chrome.storage.local.remove("auth", () => flash("Signed out."));
   });
 
-  const devOnly = [
-    instanceHeader,
-    instanceHint,
-    instanceEl,
-    signoutBtn,
-    savedNote,
-    signoutHint,
-  ];
-  const applyDevMode = () => {
-    const on = !!cfg.devMode;
-    devCheck.checked = on;
-    devOnly.forEach((node) => (node.style.display = on ? "" : "none"));
-  };
-  devCheck.addEventListener("change", () => {
-    cfg.devMode = devCheck.checked;
-    applyDevMode();
-    persist();
-  });
-
   gear.addEventListener("click", () => {
     const showing = settings.style.display !== "none";
     if (!showing) {
@@ -422,7 +387,6 @@
       panel.style.display = "none";
       panel.textContent = "";
       instanceEl.value = cfg.instanceUrl || DEFAULT_INSTANCE;
-      applyDevMode();
       savedNote.textContent = "";
     }
     settings.style.display = showing ? "none" : "block";
