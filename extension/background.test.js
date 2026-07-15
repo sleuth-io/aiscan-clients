@@ -110,6 +110,25 @@ function firstMember(body) {
   return { name, json: JSON.parse(field(tar, 512, size)) };
 }
 
+test("upload marks a re-send with force so the server re-parses it", async (t) => {
+  // Ingest is idempotent on window + content, so a re-send of the same conversations
+  // is accepted and ignored unless it says force. Without this the "send them again"
+  // escape hatch reports success and changes nothing.
+  const { cap } = mockEnv(t);
+  const conv = { uuid: "u1", chat_messages: [{ sender: "human", text: "hi", content: [] }] };
+
+  await upload({ provider: "claude-ai", conversations: [conv], span: SPAN, force: true }, 1);
+  assert.equal(new URL(cap.url).searchParams.get("force"), "1");
+});
+
+test("upload omits force on an ordinary sync", async (t) => {
+  const { cap } = mockEnv(t);
+  const conv = { uuid: "u1", chat_messages: [{ sender: "human", text: "hi", content: [] }] };
+
+  await upload({ provider: "claude-ai", conversations: [conv], span: SPAN }, 1);
+  assert.equal(new URL(cap.url).searchParams.get("force"), null);
+});
+
 test("upload files claude.ai conversations as raw JSON under claude-web/", async (t) => {
   const { cap, instanceUrl } = mockEnv(t);
   const conv = {
