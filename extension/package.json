@@ -1,6 +1,6 @@
 {
   "name": "aiscan-extension",
-  "version": "0.0.4",
+  "version": "0.0.0",
   "private": true,
   "description": "aiscan WebExtension. Runtime is dependency-free; devDependencies exist only for tests and packaging (build/sign the Firefox XPI and Chrome CRX).",
   "scripts": {

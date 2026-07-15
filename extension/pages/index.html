@@ -16,7 +16,11 @@
 
     <h2>Firefox</h2>
     <p>Install (and receive auto-updates) from the signed package:</p>
-    <p><a class="btn" href="https://github.com/sleuth-io/aiscan-clients/releases/latest/download/aiscan.xpi">Install for Firefox</a></p>
+    <!-- __XPI_URL__ is substituted with this release's exact tag when the release workflow
+         assembles the Pages site. It must not be hardcoded to releases/latest/download: no release
+         in this repo is marked "latest" (several clients share it), so that URL would 404 or
+         resolve to a desktop CLI release. -->
+    <p><a class="btn" href="__XPI_URL__">Install for Firefox</a></p>
 
     <h2>Chrome / Edge (managed)</h2>
     <p>Deployed by your IT team via enterprise policy. The update manifest lives at

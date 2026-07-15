@@ -39,9 +39,14 @@ See `README.md` and `docs/transparency.md`.
 
 Multiple clients share this repo, so **no release uses a bare `vX.Y.Z` tag**. Each client
 prefixes its tags with its directory name: `desktop-vX.Y.Z` (Go CLI, built by
-`release-desktop.yml` on tag push) and `extension-vX.Y.Z` (browser extension, released by
-`release-extension.yml` on manifest-version bumps). Never mark a release "latest" and never
+`release-desktop.yml` on tag push) and `extension-vX.Y.Z` (browser extension, built by
+`release-extension.yml` on tag push). Never mark a release "latest" and never
 link `releases/latest` — pin exact tags.
+
+**The tag is the source of truth for the version** in both clients — the desktop CLI stamps it
+via ldflags, the extension stamps it into the staged manifest from `AISCAN_VERSION`. Nothing
+committed carries a real version (`extension/manifest.json` holds a `0.0.0` placeholder), so
+there is nothing to bump before a release: tag and push.
 
 ## desktop/ (Go) — commands & conventions
 

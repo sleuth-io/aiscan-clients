@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sleuth AI Insights",
-  "version": "0.0.4",
+  "version": "0.0.0",
   "description": "Captures your claude.ai, chatgpt.com, and Gemini conversations and uploads a redacted copy to Sleuth for analysis.",
   "permissions": ["storage", "tabs"],
   "host_permissions": [

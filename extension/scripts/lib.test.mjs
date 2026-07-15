@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import {
   buildFirefoxUpdates,
   DEV_ONLY_HOST_PATTERNS,
+  isPackableVersion,
   runtimeFilesFromManifest,
   transformManifest,
   withTrailingSlash,
@@ -32,6 +33,28 @@ test('dev build keeps dev hosts and adds no auto-update fields', () => {
   const ch = transformManifest(FIXTURE, { target: 'chrome', isProd: false, updateBaseUrl: BASE })
   assert.ok(ch.host_permissions.includes('http://dev.pulse.sleuth.io/*'))
   assert.equal(ch.update_url, undefined)
+})
+
+test('the release version is stamped over the manifest placeholder', () => {
+  for (const target of ['firefox', 'chrome']) {
+    const m = transformManifest(FIXTURE, { target, isProd: true, updateBaseUrl: BASE, version: '9.8.7' })
+    assert.equal(m.version, '9.8.7')
+  }
+})
+
+test('a build with no version keeps the manifest version untouched', () => {
+  const m = transformManifest(FIXTURE, { target: 'chrome', isProd: false, updateBaseUrl: BASE })
+  assert.equal(m.version, FIXTURE.version)
+})
+
+test('isPackableVersion accepts what Chrome accepts and rejects the rest', () => {
+  for (const v of ['0', '1.2', '1.2.3', '1.2.3.4', '0.0.0', '65535.65535']) {
+    assert.ok(isPackableVersion(v), `${v} should be packable`)
+  }
+  // Pre-release suffixes are the live risk: `extension-v1.0.0-rc1` matches the workflow's tag glob.
+  for (const v of ['1.0.0-rc1', '1.2.3.4.5', '65536', '01.2', 'v1.2.3', '1..2', '', 'abc']) {
+    assert.ok(!isPackableVersion(v), `${v} should not be packable`)
+  }
 })
 
 test('prod build strips only the dev-only hosts', () => {

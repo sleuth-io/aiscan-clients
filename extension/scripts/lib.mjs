@@ -8,6 +8,16 @@ export const DEV_ONLY_HOST_PATTERNS = ['http://dev.pulse.sleuth.io/*', 'https://
 
 export const withTrailingSlash = (url) => url.replace(/\/*$/, '/')
 
+// Whether a version string is one both stores will accept. Chrome is the strict one: 1-4
+// dot-separated integers, each 0-65535, no leading zeros. Worth checking at the boundary because
+// the release tag is the version's source of truth — a tag like `extension-v1.0.0-rc1` matches the
+// workflow's `extension-v*` glob and would otherwise fail deep inside the CRX pack, after signing.
+export function isPackableVersion(version) {
+  const parts = String(version).split('.')
+  if (parts.length > 4) return false
+  return parts.every((p) => /^\d+$/.test(p) && !(p.length > 1 && p.startsWith('0')) && Number(p) <= 65535)
+}
+
 // The runtime scripts a manifest references (background + content scripts). Both the build (what to
 // copy) and the Chrome pack (what to zip) derive their file list from this single source of truth,
 // so adding or renaming a script can't silently ship a manifest that points at a missing file.
@@ -22,10 +32,18 @@ export function runtimeFilesFromManifest(manifest) {
 
 // Apply the per-target, per-environment tweaks to a parsed manifest and return a new object
 // (the input is left untouched). `updateBaseUrl` is where the stable pointer files are published.
-export function transformManifest(manifest, { target, isProd, updateBaseUrl }) {
+// `version`, when given, replaces the manifest's placeholder — see the release tag note below.
+export function transformManifest(manifest, { target, isProd, updateBaseUrl, version }) {
   if (!['firefox', 'chrome'].includes(target)) throw new Error(`unknown target: ${target}`)
   const m = structuredClone(manifest)
   const base = withTrailingSlash(updateBaseUrl)
+
+  // The release tag is the source of truth for the version, mirroring the desktop CLI (which
+  // stamps it via ldflags). The committed manifest carries a 0.0.0 placeholder, so CI passes the
+  // tag's version here: the shipped manifest — the thing browsers compare to decide whether to
+  // auto-update — then matches the tag it was released under by construction, with no bump to
+  // forget. Dev builds pass nothing and stay on the placeholder.
+  if (version) m.version = version
 
   if (isProd) {
     m.host_permissions = (m.host_permissions || []).filter((h) => !DEV_ONLY_HOST_PATTERNS.includes(h))

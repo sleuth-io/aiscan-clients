@@ -19,12 +19,16 @@ applies per-browser + per-environment tweaks; nothing is maintained twice. Build
 | --- | --- | --- |
 | `update_manifest.xml` (Chrome) | GitHub Pages | `https://sleuth-io.github.io/aiscan-clients/update_manifest.xml` |
 | `updates.json` (Firefox) | GitHub Pages | `https://sleuth-io.github.io/aiscan-clients/updates.json` |
-| `aiscan.crx` | Release asset | `.../releases/latest/download/aiscan.crx` |
-| `aiscan.xpi` | Release asset | `.../releases/latest/download/aiscan.xpi` |
+| `aiscan.crx` | Release asset | `.../releases/download/extension-v<version>/aiscan.crx` |
+| `aiscan.xpi` | Release asset | `.../releases/download/extension-v<version>/aiscan.xpi` |
 
 The two Pages files are the **stable** URLs IT policy / Firefox reference once; their `version`
-field bumps each release and their download links point at the stable `releases/latest/download/`
-URLs. So a release only redeploys two tiny files to Pages.
+field and their download links are rewritten each release to pin that release's exact tag. So a
+release only redeploys two tiny files to Pages.
+
+The download links pin an exact tag rather than `releases/latest/download/` deliberately: several
+clients share this repo, so "latest" is whatever shipped most recently — a desktop CLI release
+would hijack it and break extension auto-update.
 
 ## Dev vs prod builds
 
@@ -43,9 +47,18 @@ AISCAN_BUILD_ENV=prod npm run build   # production build
 
 ## Versioning
 
-Bump `version` in [manifest.json](manifest.json) for every release — the release workflow keys off
-it, and both signers/updaters reject a re-upload of the same version. `package.json` mirrors it;
-`manifest.json` is the source of truth.
+The **release tag is the source of truth**: `extension-vX.Y.Z`. CI stamps that version into the
+staged manifest at build time (the same way the desktop CLI stamps its version via ldflags), so
+shipping is just pushing the tag — there is nothing to bump first. See [CI/CD](#cicd).
+
+`manifest.json` and `package.json` therefore carry a `0.0.0` **placeholder**. That's deliberate: a
+real number in the repo would be a second source of truth that could silently disagree with the tag
+it shipped under. Local builds report `v0.0.0` unless you set `AISCAN_VERSION`.
+
+Chrome constrains the shape — 1–4 dot-separated integers, each 0–65535, so no `-rc1` suffixes. The
+build rejects an unusable `AISCAN_VERSION` up front rather than letting it fail deep in the CRX
+pack, after signing. Both signers/updaters reject a re-upload of an existing version, so every tag
+must be a new one.
 
 ## Firefox — signed XPI (local)
 
@@ -82,10 +95,17 @@ extension ID + the exact policy string IT needs:
 - **[ci.yml](../.github/workflows/ci.yml)** runs on every PR and push: the `extension` job runs
   tests, `web-ext lint`, a build of both targets, and a production build + CRX pack (with a
   throwaway key) so an un-buildable change can't merge.
-- **[release-extension.yml](../.github/workflows/release-extension.yml)** runs on push to `main`.
-  If `manifest.json`'s version hasn't been released yet, it signs + packs both browsers, publishes
-  a `v<version>` GitHub Release with the binaries, and deploys the Pages pointer files. No version
-  bump ⇒ no-op.
+- **[release-extension.yml](../.github/workflows/release-extension.yml)** runs on an
+  `extension-vX.Y.Z` tag. It stamps the tag's version into the build, signs + packs both browsers,
+  publishes an `extension-v<version>` GitHub Release with the binaries, and deploys the Pages
+  pointer files. Cutting a release is one step:
+
+  ```
+  git tag extension-v0.1.0 && git push origin extension-v0.1.0
+  ```
+
+  Tags are prefixed per client (the desktop CLI uses `desktop-v*`), so nothing owns a bare
+  `vX.Y.Z`. If a release for the tag already exists the run no-ops rather than re-publishing.
 
 ### One-time repo setup
 
@@ -102,8 +122,9 @@ extension ID + the exact policy string IT needs:
 | Var | Used by | Default |
 | --- | --- | --- |
 | `AISCAN_BUILD_ENV` | build | `dev` |
+| `AISCAN_VERSION` | build | — (keeps the manifest's `0.0.0` placeholder; CI sets it from the tag) |
 | `AISCAN_UPDATE_BASE_URL` | build + chrome pack | `https://sleuth-io.github.io/aiscan-clients/` |
-| `AISCAN_RELEASE_BASE_URL` | chrome + firefox pack | `https://github.com/sleuth-io/aiscan-clients/releases/latest/download/` |
+| `AISCAN_RELEASE_BASE_URL` | chrome + firefox pack | `https://github.com/sleuth-io/aiscan-clients/releases/download/extension-v<version>/` |
 | `CHROME_EXT_KEY` | chrome pack/keygen | `./chrome-key.pem` |
 | `AISCAN_EXPECTED_APP_ID` | chrome pack | — (optional id guard) |
 | `WEB_EXT_API_KEY` / `WEB_EXT_API_SECRET` | firefox sign | — (required) |
