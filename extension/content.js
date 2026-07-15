@@ -38,8 +38,8 @@
       name: "claude-ai",
       label: "claude.ai",
       async listConversations() {
-        // Chat lives under the org with the "chat" capability (see findOrg).
-        this.org = await findOrg();
+        // Only the org you're actually signed into — see findActiveChatOrg.
+        this.org = await findActiveChatOrg();
         const list = await getJSON(
           "/api/organizations/" + this.org + "/chat_conversations",
         );
@@ -434,12 +434,29 @@
     return r.json();
   }
 
-  async function findOrg() {
+  function readCookie(name) {
+    for (const part of document.cookie.split(";")) {
+      const i = part.indexOf("=");
+      if (i > 0 && part.slice(0, i).trim() === name)
+        return decodeURIComponent(part.slice(i + 1));
+    }
+    return null;
+  }
+
+  // The one chat org you're currently signed into — never the others. An account
+  // often has several (a personal org plus a team workspace), and we deliberately
+  // scan only the active one: uploading conversations from an account you aren't
+  // looking at would be a surprise, and surprise is the thing this client must
+  // never do.
+  //
+  // claude.ai itself records the current org in the lastActiveOrg cookie as you
+  // switch, so read that rather than guess. Orgs without the "chat" capability
+  // (enterprise "api", individual "api_individual") 403 on the chat endpoints, so
+  // they're never candidates — if the cookie names one, fall back to the first
+  // chat org and say which we picked.
+  async function findActiveChatOrg() {
     const orgs = await getJSON("/api/organizations");
     const list = Array.isArray(orgs) ? orgs : [];
-    // Chat conversations live under an org with the "chat" capability. Other
-    // orgs (enterprise "api", individual "api_individual") 403 on the chat
-    // endpoints. Prefer the user's own chat org.
     const chat = list.filter(
       (o) =>
         o &&
@@ -447,17 +464,24 @@
         Array.isArray(o.capabilities) &&
         o.capabilities.includes("chat"),
     );
-    if (chat.length > 1) {
+    if (!chat.length)
+      throw new Error('no organization with the "chat" capability found');
+
+    const active = readCookie("lastActiveOrg");
+    const match = chat.find((o) => o.uuid === active);
+    const picked = match || chat[0];
+    // With more than one chat org, name the one we scanned: which account the
+    // data came from is exactly the kind of thing you should never have to guess.
+    if (chat.length > 1)
       log(
         "  " +
           chat.length +
-          ' chat orgs; using "' +
-          (chat[0].name || chat[0].uuid) +
-          '"',
+          ' chat orgs; scanning "' +
+          (picked.name || picked.uuid) +
+          '"' +
+          (match ? "" : " (no active org cookie)"),
       );
-    }
-    if (chat[0]) return chat[0].uuid;
-    throw new Error('no organization with the "chat" capability found');
+    return picked.uuid;
   }
 
   async function mapLimit(items, limit, fn) {
