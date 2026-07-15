@@ -1,19 +1,23 @@
 name: Release extension
 
-# On merge to main: if extension/manifest.json carries a version we haven't released yet, build +
-# sign both browsers, publish a GitHub Release with the binaries, and deploy the stable pointer
-# files (Chrome update_manifest.xml + Firefox updates.json) to GitHub Pages. Bump the manifest
-# version in a PR to ship; no bump = no-op.
+# On an extension-vX.Y.Z tag: build + sign both browsers, publish a GitHub Release with the
+# binaries, and deploy the stable pointer files (Chrome update_manifest.xml + Firefox updates.json)
+# to GitHub Pages. Tag to ship; there is nothing to bump first.
 #
-# Releases are tagged extension-vX.Y.Z — every client in this repo prefixes its tags (the desktop
-# CLI uses desktop-v*), so nothing owns bare vX.Y.Z. The pointer files pin the exact release
-# download URL rather than releases/latest, which is meaningless in a multi-client repo, and the
-# release is never marked "latest" for the same reason.
+# The tag is the source of truth for the version, exactly as it is for the desktop CLI (which
+# stamps it via ldflags). extension/manifest.json carries a 0.0.0 placeholder and the build stamps
+# the tag's version into the STAGED manifest — the one browsers read for auto-update — so the
+# shipped version and the tag cannot disagree. Both stores reject a re-upload of an existing
+# version, so each tag must be a new one.
+#
+# Every client in this repo prefixes its tags (the desktop CLI uses desktop-v*), so nothing owns
+# bare vX.Y.Z. The pointer files pin the exact release download URL rather than releases/latest,
+# which is meaningless in a multi-client repo, and the release is never marked "latest" for the
+# same reason.
 
 on:
   push:
-    branches: [main]
-    paths: ['extension/**']
+    tags: ['extension-v*']
 
 permissions:
   contents: write # create the Release
@@ -38,18 +42,18 @@ jobs:
         with:
           node-version: lts/*
 
-      - name: Read manifest version
+      - name: Resolve version from tag
         id: ver
-        run: echo "version=$(node -p "require('./extension/manifest.json').version")" >> "$GITHUB_OUTPUT"
+        run: echo "version=${GITHUB_REF_NAME#extension-v}" >> "$GITHUB_OUTPUT"
 
       - name: Skip if already released
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "extension-v${{ steps.ver.outputs.version }}" >/dev/null 2>&1; then
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::extension-v${{ steps.ver.outputs.version }} already released — nothing to do."
+            echo "::notice::$GITHUB_REF_NAME already released — nothing to do."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -77,7 +81,8 @@ jobs:
         working-directory: extension
         env:
           AISCAN_BUILD_ENV: prod
-          AISCAN_RELEASE_BASE_URL: https://github.com/sleuth-io/aiscan-clients/releases/download/extension-v${{ steps.ver.outputs.version }}/
+          AISCAN_VERSION: ${{ steps.ver.outputs.version }}
+          AISCAN_RELEASE_BASE_URL: https://github.com/sleuth-io/aiscan-clients/releases/download/${{ github.ref_name }}/
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: npm run package:firefox
@@ -87,7 +92,8 @@ jobs:
         working-directory: extension
         env:
           AISCAN_BUILD_ENV: prod
-          AISCAN_RELEASE_BASE_URL: https://github.com/sleuth-io/aiscan-clients/releases/download/extension-v${{ steps.ver.outputs.version }}/
+          AISCAN_VERSION: ${{ steps.ver.outputs.version }}
+          AISCAN_RELEASE_BASE_URL: https://github.com/sleuth-io/aiscan-clients/releases/download/${{ github.ref_name }}/
           # Optional guard: if set, the pack fails when the signing key yields a different extension
           # id (a wrong CHROME_SIGNING_KEY would silently break auto-update for managed browsers).
           AISCAN_EXPECTED_APP_ID: ${{ vars.CHROME_EXTENSION_ID }}
@@ -97,8 +103,8 @@ jobs:
         if: steps.gate.outputs.exists == 'false'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: extension-v${{ steps.ver.outputs.version }}
-          name: extension-v${{ steps.ver.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           make_latest: false
           files: |
             extension/dist/artifacts/aiscan.crx
@@ -107,8 +113,17 @@ jobs:
       - name: Assemble Pages site
         if: steps.gate.outputs.exists == 'false'
         run: |
+          set -euo pipefail
           mkdir -p _site
-          cp extension/pages/index.html _site/
+          # Pin the Firefox install link to this release's tag. It cannot use
+          # releases/latest/download: no release here is marked "latest" (several clients share the
+          # repo), so that URL 404s or resolves to a desktop CLI release.
+          XPI_URL="https://github.com/sleuth-io/aiscan-clients/releases/download/${GITHUB_REF_NAME}/aiscan.xpi"
+          sed "s|__XPI_URL__|${XPI_URL}|g" extension/pages/index.html > _site/index.html
+          if grep -q '__XPI_URL__' _site/index.html; then
+            echo "::error::__XPI_URL__ placeholder survived substitution in the Pages index."
+            exit 1
+          fi
           cp extension/dist/artifacts/update_manifest.xml _site/
           cp extension/dist/artifacts/updates.json _site/
 

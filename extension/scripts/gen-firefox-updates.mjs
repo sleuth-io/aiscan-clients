@@ -15,7 +15,14 @@ import { buildFirefoxUpdates, withTrailingSlash } from './lib.mjs'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = join(root, 'dist', 'artifacts')
 
-const manifest = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8'))
+// Read the BUILT manifest, not the source one: the source carries a 0.0.0 placeholder and the real
+// version is stamped in at build time from the release tag. This is the manifest web-ext actually
+// signed, so updates.json cannot advertise a version that differs from the xpi it points at.
+const builtManifest = join(root, 'dist', 'firefox', 'manifest.json')
+const manifest = await readFile(builtManifest, 'utf8').then(JSON.parse, () => {
+  console.error('dist/firefox not built — run: npm run build:firefox')
+  process.exit(1)
+})
 const version = manifest.version
 const addonId = manifest.browser_specific_settings?.gecko?.id
 if (!addonId) {

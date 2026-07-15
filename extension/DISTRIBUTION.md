@@ -7,16 +7,16 @@ commands and env vars, see [PACKAGING.md](PACKAGING.md); this doc is the map, th
 ## TL;DR
 
 The browser extension lives in [`/extension`](.). One codebase builds for both **Chrome** and
-**Firefox** from a single `manifest.json`. On merge to `main`, GitHub Actions signs and packages
-both, publishes a **GitHub Release** with the binaries, and deploys two small "where's the latest
-version" pointer files to **GitHub Pages**. Chrome is installed by the customer's IT via enterprise
-policy; Firefox is installed from a link. Both auto-update.
+**Firefox** from a single `manifest.json`. On an `extension-vX.Y.Z` tag, GitHub Actions signs and
+packages both, publishes a **GitHub Release** with the binaries, and deploys two small "where's the
+current version" pointer files to **GitHub Pages**. Chrome is installed by the customer's IT via
+enterprise policy; Firefox is installed from a link. Both auto-update.
 
 ## Where things live
 
 | Path | What |
 | --- | --- |
-| `extension/manifest.json` | The single source of truth (name, version, permissions, IDs). |
+| `extension/manifest.json` | The single source of truth for name, permissions, IDs. Its `version` is a `0.0.0` placeholder — the release tag supplies the real one. |
 | `extension/background.js`, `content.js` | The runtime (capture + upload). |
 | `extension/scripts/build.mjs` | Stages the manifest + declared scripts into `dist/<target>/`. |
 | `extension/scripts/pack-chrome.mjs` | Signs the Chrome `.crx` and writes `update_manifest.xml`. |
@@ -24,7 +24,7 @@ policy; Firefox is installed from a link. Both auto-update.
 | `extension/scripts/lib.mjs` (+ `lib.test.mjs`) | Pure helpers, unit-tested. |
 | `extension/pages/index.html` | The public landing page served on GitHub Pages. |
 | `.github/workflows/ci.yml` | Tests + build check on every PR. |
-| `.github/workflows/release-extension.yml` | The release pipeline (runs on `main`). |
+| `.github/workflows/release-extension.yml` | The release pipeline (runs on `extension-v*` tags). |
 | `extension/dist/` | Build output. Gitignored — never committed. |
 
 ## How a build works
@@ -49,25 +49,31 @@ packaging.
 
 - **`ci.yml`** — on every PR and push: runs tests, `web-ext lint`, builds both targets, and does a
   production build + CRX pack with a throwaway key. This keeps an un-buildable change from merging.
-- **`release-extension.yml`** — on push to `main`: reads the manifest version; if that version
-  hasn't been released yet, it signs + packs both browsers, creates a `v<version>` GitHub Release
-  with the binaries attached, and deploys the pointer files to Pages. **No version bump ⇒ no-op.**
-  So cutting a release is just: bump `version` in `manifest.json`, merge.
+- **`release-extension.yml`** — on an `extension-vX.Y.Z` tag: stamps the tag's version into the
+  build, signs + packs both browsers, creates an `extension-v<version>` GitHub Release with the
+  binaries attached, and deploys the pointer files to Pages. So cutting a release is just:
+  `git tag extension-v0.1.0 && git push origin extension-v0.1.0`.
+
+  The tag is the **only** place the version is declared — `manifest.json` ships a `0.0.0`
+  placeholder that the build overwrites. That mirrors the desktop CLI (which stamps its version via
+  ldflags) and means the shipped manifest can't disagree with the tag it was released under.
 
 ## Hosting map
 
 Two kinds of URL. The **pointer files** are stable (referenced once by IT policy / Firefox); the
-**binaries** are versioned Release assets served from a stable `latest/download` alias.
+**binaries** are Release assets at a URL pinned to that release's exact tag.
 
 | File | Hosted on | URL |
 | --- | --- | --- |
 | `update_manifest.xml` (Chrome feed) | GitHub Pages | `https://sleuth-io.github.io/aiscan-clients/update_manifest.xml` |
 | `updates.json` (Firefox feed) | GitHub Pages | `https://sleuth-io.github.io/aiscan-clients/updates.json` |
-| `aiscan.crx` | Release asset | `.../releases/latest/download/aiscan.crx` |
-| `aiscan.xpi` | Release asset | `.../releases/latest/download/aiscan.xpi` |
+| `aiscan.crx` | Release asset | `.../releases/download/extension-v<version>/aiscan.crx` |
+| `aiscan.xpi` | Release asset | `.../releases/download/extension-v<version>/aiscan.xpi` |
 
-Each release only redeploys the two tiny pointer files to Pages; their `version` field bumps and
-their download links keep pointing at `latest/download`.
+Each release only redeploys the two tiny pointer files to Pages; their `version` field and their
+download links are rewritten to pin the new tag. Nothing points at `releases/latest/download` —
+several clients share this repo, so "latest" is whatever shipped most recently, and a desktop CLI
+release would hijack it and break extension auto-update.
 
 ## How users install
 
@@ -75,8 +81,9 @@ their download links keep pointing at `latest/download`.
   `<chrome-extension-id>;https://sleuth-io.github.io/aiscan-clients/update_manifest.xml`.
   Chrome silently installs and auto-updates. (Off-store `.crx` files can't be installed on
   unmanaged Chrome — enterprise policy is the supported path.)
-- **Firefox:** users click the install link (`.../releases/latest/download/aiscan.xpi`). Firefox
-  installs with one permission prompt and auto-updates via `updates.json`.
+- **Firefox:** users click the install link on the [Pages site](https://sleuth-io.github.io/aiscan-clients/),
+  which the release rewrites to point at that release's exact `.xpi`. Firefox installs with one
+  permission prompt and auto-updates via `updates.json`.
 
 ## Identities
 
