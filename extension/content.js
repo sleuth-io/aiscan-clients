@@ -523,7 +523,34 @@
     );
   }
 
-  async function scan() {
+  // `force` re-sends everything in the window even though the server believes it
+  // already has it. It is a deliberate one-shot action, never a saved setting: left
+  // on, every scan would re-upload the whole window and re-do the server's work.
+  // The escape hatch, and deliberately a quiet one. Three things keep it from being
+  // a footgun: it appears only at the dead end (a sync that found nothing to do, which
+  // is the sole place someone with missing data gets stuck); it is worded as the
+  // symptom rather than the mechanism, so anyone whose data is fine has no reason to
+  // read past the first two words; and it is a one-shot action, not a setting, because
+  // a "force" left switched on would re-upload everything on every scan forever.
+  function showForceLink() {
+    panel.appendChild(
+      el("a", {
+        href: "#",
+        text: "Conversations missing? Send them again",
+        style:
+          "display:block;margin-top:10px;color:#b9b9b9;font-size:12px;" +
+          "text-decoration:underline;cursor:pointer",
+        on: {
+          click: (e) => {
+            e.preventDefault();
+            scan({ force: true });
+          },
+        },
+      }),
+    );
+  }
+
+  async function scan({ force = false } = {}) {
     // Take over the popover: drop the settings view, show a fresh log, and lock
     // the ⚙ so settings can't reopen mid-scan.
     btn.disabled = true;
@@ -550,11 +577,16 @@
         },
       ];
 
-      log("Asking the server what it still needs…");
+      log(
+        force
+          ? "Asking the server for everything again…"
+          : "Asking the server what it still needs…",
+      );
       const plan = await chrome.runtime.sendMessage({
         type: "plan",
         provider: provider.name,
         available,
+        force,
       });
       if (!plan || !plan.ok) {
         log("Sync plan failed: " + (plan && plan.error));
@@ -564,6 +596,9 @@
       if (!needed.length) {
         log("Already up to date — nothing to sync.");
         showReportsLink(plan.reportsUrl);
+        // The one place someone whose data is missing ends up: they came to sync,
+        // were told there is nothing to do, and without this the trail stops here.
+        if (!force) showForceLink();
         return;
       }
       log("  " + needed.length + " span(s) to sync");
@@ -583,7 +618,7 @@
         let conversations = [];
         if (inSpan.length) {
           log(
-            "Syncing " +
+            (force ? "Re-sending " : "Syncing ") +
               fmtSpan(span) +
               " — " +
               inSpan.length +
@@ -608,6 +643,10 @@
           provider: provider.name,
           conversations,
           span,
+          // Storing is idempotent on window + content, so on a re-send the server
+          // needs telling to act on bytes it already has — otherwise it accepts the
+          // upload and does nothing with it.
+          force,
         });
         if (resp && resp.ok) synced += resp.sessions;
         else log("  upload failed: " + (resp && resp.error));
@@ -624,7 +663,9 @@
     }
   }
 
-  btn.addEventListener("click", scan);
+  // Wrapped, not passed by reference: scan() takes an options object, and handing it
+  // the click event would make the button's behaviour depend on an event's properties.
+  btn.addEventListener("click", () => scan());
 
   // The background worker authorizes via the OAuth device-code flow on first
   // upload (or after a token expires). It opens the approval page in a new tab

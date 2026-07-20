@@ -260,9 +260,12 @@ const PROVIDER_CFG = {
 // returns just the spans it still needs. One fixed query, hand-rolled JSON over
 // GraphQL (matching upload's style — no client library). The client does no
 // interval math of its own; the server owns coverage.
+// `force` asks the server to ignore what it has already recorded and hand back the
+// whole window — the user's escape hatch when their data isn't there. The server
+// still clips to its own floor, so this can't reach further back than a normal sync.
 const PLAN_QUERY =
-  "query Plan($source: String!, $schemaVersion: Int!, $available: [AiScanSpanInput!]!) {" +
-  " aiscanSyncPlan(source: $source, schemaVersion: $schemaVersion, available: $available) {" +
+  "query Plan($source: String!, $schemaVersion: Int!, $available: [AiScanSpanInput!]!, $force: Boolean) {" +
+  " aiscanSyncPlan(source: $source, schemaVersion: $schemaVersion, available: $available, force: $force) {" +
   " neededSpans { start end } } }";
 
 // plan asks the server which spans of this source's history are still missing.
@@ -286,6 +289,7 @@ async function plan(msg, tabId) {
         source: cfg.source,
         schemaVersion: SCHEMA_VERSION,
         available: Array.isArray(msg.available) ? msg.available : [],
+        force: !!msg.force,
       },
     }),
   });
@@ -362,7 +366,11 @@ async function upload(msg, tabId) {
     "&captured_end=" +
     encodeURIComponent(capturedEnd) +
     "&schema_version=" +
-    SCHEMA_VERSION;
+    SCHEMA_VERSION +
+    // Storing is idempotent on window + content, so re-sending the same conversations
+    // would otherwise be accepted and quietly ignored. force tells the server to
+    // process them again — without it the escape hatch reports success and does nothing.
+    (msg.force ? "&force=1" : "");
   const res = await fetch(url, {
     method: "POST",
     headers: {
