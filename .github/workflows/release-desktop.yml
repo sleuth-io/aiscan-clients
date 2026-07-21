@@ -17,9 +17,15 @@ name: Release desktop
 #     downloads against it.
 #
 # Hand-rolled rather than GoReleaser because prefixed tags in a multi-client
-# repo are a GoReleaser Pro feature. Never marked "latest" — client releases
-# share this repo, so the latest pointer is meaningless and extension update
-# URLs must not depend on it.
+# repo are a GoReleaser Pro feature. Never marked GitHub's repo-level "latest" —
+# client releases share this repo, so that single pointer is meaningless and
+# extension update URLs must not depend on it.
+#
+# Per-train "latest" instead lives in a `desktop-latest` pointer release whose
+# body names the versioned tag it points at; pulse's download endpoint reads
+# only that. After publishing, this workflow moves the pointer to the new
+# release unless the tag is annotated "latest: false" (a back-port or a yank —
+# see scripts/release.sh).
 
 on:
   push:
@@ -267,6 +273,8 @@ jobs:
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
+      # Checked out so the pointer step can read the tag's annotation (git cat-file).
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -286,3 +294,26 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --latest=false \
             --notes "aiscan desktop ${VERSION}. Mac app: download Aiscan.dmg and drag Aiscan to Applications. CLI: installed clients pick this up automatically, or run \`aiscan update\`."
+
+      # Move the desktop-latest pointer to this release, unless the tag says not-latest (a back-port
+      # or a yank). The pointer is a release under the fixed `desktop-latest` tag whose body names
+      # the versioned tag; pulse's download endpoint reads only that, so it never scans releases.
+      # Done here, after assets are uploaded, so the pointer never names a release whose files aren't
+      # up yet. A lightweight tag (no annotation) reads as latest.
+      - name: Move desktop-latest pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git cat-file tag "$GITHUB_REF_NAME" 2>/dev/null | grep -qiE '^latest:[[:space:]]*false'; then
+            echo "::notice::$GITHUB_REF_NAME is marked not-latest - leaving desktop-latest unchanged."
+            exit 0
+          fi
+          if gh release view desktop-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit desktop-latest --repo "$GITHUB_REPOSITORY" --notes "$GITHUB_REF_NAME"
+          else
+            gh release create desktop-latest --repo "$GITHUB_REPOSITORY" \
+              --title "desktop latest (pointer)" --notes "$GITHUB_REF_NAME" \
+              --prerelease --latest=false
+          fi
+          echo "::notice::desktop-latest -> $GITHUB_REF_NAME"
