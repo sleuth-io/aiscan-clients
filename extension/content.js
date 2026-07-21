@@ -554,14 +554,14 @@
   }
 
   // Upload confirmation modal — shown after the sync plan names the needed
-  // spans, before any transcript is fetched. Lists every conversation the scan
-  // would upload; clicking one crosses it out and excludes it (clicking again
-  // re-includes it). The span is still uploaded (so
-  // the server marks it scanned), which means an excluded conversation is
-  // never asked for again — exclusion is permanent, the conservative choice
-  // for a privacy gate. Resolves to a Set of ids to upload, or null when the
-  // user cancels (nothing uploaded, no span marked as scanned).
-  function confirmUpload(items) {
+  // spans, before any transcript is fetched. Clicking a row crosses it out and
+  // excludes it from the upload; clicking again re-includes it. Exclusions are
+  // persisted per provider, so if an excluded conversation reappears in a
+  // later scan it shows up pre-crossed rather than hidden — visible, but never
+  // uploaded unless the user re-includes it. Resolves to a Set of ids to
+  // upload, or null when the user cancels (nothing uploaded, no span marked
+  // as scanned).
+  function confirmUpload(items, preExcluded) {
     return new Promise((resolve) => {
       const sorted = items
         .slice()
@@ -620,7 +620,7 @@
             el("span", {
               text: isNaN(t)
                 ? "undated"
-                : new Date(t).toISOString().slice(0, 10),
+                : new Date(t).toLocaleDateString("en-CA"),
               style: "flex:none;margin-left:10px;color:#9a9aa0;font-size:11px",
             }),
           ],
@@ -630,6 +630,7 @@
           row.style.textDecoration = excluded ? "line-through" : "";
           titleSpan.style.color = excluded ? "#6e6e73" : "";
         };
+        if (preExcluded.has(c.id)) entry.set(true);
         entries.push(entry);
         return row;
       });
@@ -691,7 +692,6 @@
             "display:flex;flex-direction:column;box-sizing:border-box;width:880px;max-width:90vw;" +
             "aspect-ratio:3/2;max-height:85vh;padding:14px;background:#1d1d1f;color:#eaeaea;border-radius:10px;" +
             "font:13px system-ui,-apple-system,sans-serif;box-shadow:0 4px 24px rgba(0,0,0,.5)",
-          on: { click: (e) => e.stopPropagation() },
         },
         [
           el("div", {
@@ -703,8 +703,8 @@
               "These " +
               provider.label +
               " conversations will be uploaded to Sleuth AI Insights. Click any you want " +
-              "to keep off the server — crossed-out conversations are skipped " +
-              "for good and won't be asked for again.",
+              "to keep off the server — crossed-out conversations won't be " +
+              "uploaded, and stay crossed out if they show up in a later sync.",
             style: "color:#9a9aa0;font-size:11px;margin:0 0 10px",
           }),
           toggleBtn,
@@ -718,7 +718,6 @@
           style:
             "position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.5);" +
             "display:flex;align-items:center;justify-content:center",
-          on: { click: () => finish(null) },
         },
         [box],
       );
@@ -817,11 +816,26 @@
       const candidates = groups.flatMap((g) => g.items);
       let keep = null;
       if (candidates.length) {
-        keep = await confirmUpload(candidates);
+        // Persisted per-provider exclusions: previously excluded conversations
+        // show up pre-crossed in the modal; the store is rewritten from the
+        // user's final selection (ids not shown this scan are kept as-is).
+        const store = await new Promise((r) =>
+          chrome.storage.local.get("excluded", r),
+        );
+        const excluded = (store && store.excluded) || {};
+        const prev = excluded[provider.name] || [];
+        keep = await confirmUpload(candidates, new Set(prev));
         if (!keep) {
           log("Cancelled — nothing was uploaded.");
           return;
         }
+        const shown = new Set(candidates.map((c) => c.id));
+        excluded[provider.name] = prev
+          .filter((id) => !shown.has(id))
+          .concat(
+            candidates.filter((c) => !keep.has(c.id)).map((c) => c.id),
+          );
+        await new Promise((r) => chrome.storage.local.set({ excluded }, r));
         const dropped = candidates.length - keep.size;
         if (dropped) log("  excluding " + dropped + " conversation(s)");
       }
