@@ -71,7 +71,9 @@ RELEASE_ARGS ?=
 .PHONY: release
 release: ## Cut a client release (TRAIN=desktop|extension [VERSION=x.y.z] [RELEASE_ARGS=--not-latest])
 	@test -n "$(TRAIN)" || { echo "usage: make release TRAIN=desktop|extension [VERSION=x.y.z] [RELEASE_ARGS=--not-latest]"; exit 2; }
-	@scripts/release.sh $(TRAIN) $(VERSION) $(RELEASE_ARGS)
+	@# Only forward VERSION when set on the command line; otherwise it defaults to the build-info
+	@# `git describe` value above, and the script should suggest the next version itself.
+	@scripts/release.sh $(TRAIN) $(if $(filter command line,$(origin VERSION)),$(VERSION)) $(RELEASE_ARGS)
 
 .PHONY: test
 test: test-desktop test-extension ## Run ALL tests (Go + JS)
