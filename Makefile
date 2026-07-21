@@ -62,6 +62,17 @@ install: build ## Build and copy the desktop binary to $(PREFIX)/bin
 run: ## Run the desktop binary (ARGS="capture --window-days 7")
 	cd $(DESKTOP) && go run ./cmd/aiscan $(ARGS)
 
+# Cut a release. Suggests the next version, guesses whether it should move the download pointer
+# (see scripts/release.sh), and pushes the tag that triggers the release workflow.
+#   make release TRAIN=desktop                     # suggest next patch, confirm, tag+push
+#   make release TRAIN=extension VERSION=0.2.0     # explicit version
+#   make release TRAIN=desktop RELEASE_ARGS=--not-latest
+RELEASE_ARGS ?=
+.PHONY: release
+release: ## Cut a client release (TRAIN=desktop|extension [VERSION=x.y.z] [RELEASE_ARGS=--not-latest])
+	@test -n "$(TRAIN)" || { echo "usage: make release TRAIN=desktop|extension [VERSION=x.y.z] [RELEASE_ARGS=--not-latest]"; exit 2; }
+	@scripts/release.sh $(TRAIN) $(VERSION) $(RELEASE_ARGS)
+
 .PHONY: test
 test: test-desktop test-extension ## Run ALL tests (Go + JS)
 

@@ -11,9 +11,13 @@ name: Release extension
 # version, so each tag must be a new one.
 #
 # Every client in this repo prefixes its tags (the desktop CLI uses desktop-v*), so nothing owns
-# bare vX.Y.Z. The pointer files pin the exact release download URL rather than releases/latest,
-# which is meaningless in a multi-client repo, and the release is never marked "latest" for the
-# same reason.
+# bare vX.Y.Z. The browser update pointer files (update_manifest.xml / updates.json) pin the exact
+# release download URL rather than GitHub's releases/latest, which is meaningless in a multi-client
+# repo, and the release is never marked GitHub's repo-level "latest" for the same reason.
+#
+# Pulse's web download endpoint uses a separate per-train pointer: an `extension-latest` release
+# whose body names the versioned tag it points at. After publishing, this workflow moves that
+# pointer to the new release unless the tag is annotated "latest: false" (see scripts/release.sh).
 
 on:
   push:
@@ -109,6 +113,29 @@ jobs:
           files: |
             extension/dist/artifacts/aiscan.crx
             extension/dist/artifacts/aiscan.xpi
+
+      # Move the extension-latest pointer to this release, unless the tag says not-latest. The
+      # pointer is a release under the fixed `extension-latest` tag whose body names the versioned
+      # tag; pulse's download endpoint reads only that, so it never scans releases. A lightweight
+      # tag (no annotation) reads as latest.
+      - name: Move extension-latest pointer
+        if: steps.gate.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if git cat-file tag "$GITHUB_REF_NAME" 2>/dev/null | grep -qiE '^latest:[[:space:]]*false'; then
+            echo "::notice::$GITHUB_REF_NAME is marked not-latest - leaving extension-latest unchanged."
+            exit 0
+          fi
+          if gh release view extension-latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit extension-latest --repo "$GITHUB_REPOSITORY" --notes "$GITHUB_REF_NAME"
+          else
+            gh release create extension-latest --repo "$GITHUB_REPOSITORY" \
+              --title "extension latest (pointer)" --notes "$GITHUB_REF_NAME" \
+              --prerelease --latest=false
+          fi
+          echo "::notice::extension-latest -> $GITHUB_REF_NAME"
 
       - name: Assemble Pages site
         if: steps.gate.outputs.exists == 'false'
