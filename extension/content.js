@@ -11,7 +11,8 @@
 // server's job — the client never transcodes.
 //
 // Layout: provider adapters (what to fetch, per site) → DOM helper → UI (the
-// button + settings/log popovers) → HTTP helpers → scan orchestration.
+// button + settings/log popovers) → HTTP helpers → scan orchestration (with a
+// pre-upload confirmation modal where the user can exclude conversations).
 
 (function () {
   if (window.__aiscanInjected) return;
@@ -45,6 +46,7 @@
         );
         return (Array.isArray(list) ? list : []).map((c) => ({
           id: c.uuid,
+          title: c.name || "",
           updated_at: c.updated_at,
           created_at: c.created_at,
         }));
@@ -99,6 +101,7 @@
         }
         return all.map((c) => ({
           id: c.id,
+          title: c.title || "",
           updated_at: c.update_time,
           created_at: c.create_time,
         }));
@@ -550,6 +553,196 @@
     );
   }
 
+  // Upload confirmation modal — shown after the sync plan names the needed
+  // spans, before any transcript is fetched. Lists every conversation the scan
+  // would upload; clicking one crosses it out and excludes it (clicking again
+  // re-includes it). The span is still uploaded (so
+  // the server marks it scanned), which means an excluded conversation is
+  // never asked for again — exclusion is permanent, the conservative choice
+  // for a privacy gate. Resolves to a Set of ids to upload, or null when the
+  // user cancels (nothing uploaded, no span marked as scanned).
+  function confirmUpload(items) {
+    return new Promise((resolve) => {
+      const sorted = items
+        .slice()
+        .sort((a, b) => (tsOf(b) || 0) - (tsOf(a) || 0));
+      const entries = [];
+
+      function refresh() {
+        const n = entries.filter((e) => !e.excluded).length;
+        uploadBtn.textContent =
+          "Upload " + n + " conversation" + (n === 1 ? "" : "s");
+        uploadBtn.disabled = !n;
+        uploadBtn.style.opacity = n ? "1" : "0.5";
+        toggleBtn.textContent = n ? "Exclude all" : "Exclude none";
+      }
+
+      function finish(result) {
+        document.removeEventListener("keydown", onKey, true);
+        overlay.remove();
+        resolve(result);
+      }
+      const onKey = (e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          finish(null);
+        }
+      };
+
+      // Each row is a plain clickable line; clicking toggles exclusion, shown
+      // as crossed-out text. entry.set applies both the state and the visuals
+      // so the Exclude-all toggle can flip every row through the same path.
+      const rows = sorted.map((c) => {
+        const t = tsOf(c);
+        const titleSpan = el("span", {
+          text: c.title || c.id,
+          title: c.title || c.id,
+          style:
+            "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap",
+        });
+        const entry = { id: c.id, excluded: false };
+        const row = el(
+          "div",
+          {
+            style:
+              "display:flex;align-items:center;padding:4px 2px;cursor:pointer;" +
+              "min-width:0;user-select:none",
+            on: {
+              click: () => {
+                entry.set(!entry.excluded);
+                refresh();
+              },
+            },
+          },
+          [
+            titleSpan,
+            el("span", {
+              text: isNaN(t)
+                ? "undated"
+                : new Date(t).toISOString().slice(0, 10),
+              style: "flex:none;margin-left:10px;color:#9a9aa0;font-size:11px",
+            }),
+          ],
+        );
+        entry.set = (excluded) => {
+          entry.excluded = excluded;
+          row.style.textDecoration = excluded ? "line-through" : "";
+          titleSpan.style.color = excluded ? "#6e6e73" : "";
+        };
+        entries.push(entry);
+        return row;
+      });
+
+      const toggleBtn = el("button", {
+        style:
+          "align-self:flex-start;margin:0 0 6px;padding:0 2px;background:none;border:none;" +
+          "cursor:pointer;color:#9a9aa0;font:12px system-ui;text-decoration:underline",
+        on: {
+          click: () => {
+            const excludeAll = entries.some((e) => !e.excluded);
+            entries.forEach((e) => e.set(excludeAll));
+            refresh();
+          },
+        },
+      });
+
+      const cancelBtn = el("button", {
+        text: "Cancel",
+        style:
+          "padding:7px 14px;background:#3a3a3f;color:#eaeaea;border:none;border-radius:6px;" +
+          "cursor:pointer;font:13px system-ui",
+        on: { click: () => finish(null) },
+      });
+      const uploadBtn = el("button", {
+        style:
+          "padding:7px 14px;background:#da7756;color:#fff;border:none;border-radius:6px;" +
+          "cursor:pointer;font:13px system-ui",
+        on: {
+          click: () =>
+            finish(
+              new Set(entries.filter((e) => !e.excluded).map((e) => e.id)),
+            ),
+        },
+      });
+
+      const listBox = el(
+        "div",
+        {
+          style:
+            "flex:1;min-height:0;overflow:auto;box-sizing:border-box;border:1px solid #3a3a3f;" +
+            "border-radius:6px;padding:4px 8px;background:#111113",
+        },
+        rows,
+      );
+      const btnRow = el(
+        "div",
+        {
+          style:
+            "display:flex;justify-content:flex-end;gap:8px;margin-top:12px",
+        },
+        [cancelBtn, uploadBtn],
+      );
+
+      const box = el(
+        "div",
+        {
+          style:
+            "display:flex;flex-direction:column;box-sizing:border-box;width:880px;max-width:90vw;" +
+            "aspect-ratio:3/2;max-height:85vh;padding:14px;background:#1d1d1f;color:#eaeaea;border-radius:10px;" +
+            "font:13px system-ui,-apple-system,sans-serif;box-shadow:0 4px 24px rgba(0,0,0,.5)",
+          on: { click: (e) => e.stopPropagation() },
+        },
+        [
+          el("div", {
+            text: "Review before uploading",
+            style: "font-weight:600;font-size:14px;margin:0 0 4px",
+          }),
+          el("div", {
+            text:
+              "These " +
+              provider.label +
+              " conversations will be uploaded to Sleuth AI Insights. Click any you want " +
+              "to keep off the server — crossed-out conversations are skipped " +
+              "for good and won't be asked for again.",
+            style: "color:#9a9aa0;font-size:11px;margin:0 0 10px",
+          }),
+          toggleBtn,
+          listBox,
+          btnRow,
+        ],
+      );
+      const overlay = el(
+        "div",
+        {
+          style:
+            "position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.5);" +
+            "display:flex;align-items:center;justify-content:center",
+          on: { click: () => finish(null) },
+        },
+        [box],
+      );
+
+      document.addEventListener("keydown", onKey, true);
+      refresh();
+      document.documentElement.appendChild(overlay);
+
+      // When the list overflows, shrink it so the bottom row is clipped mid-row
+      // — a visible half-item is the scroll affordance. Measured after mount
+      // (heights only exist once laid out); the freed space goes between the
+      // list and the buttons, which stay pinned to the bottom via margin auto.
+      const rowH = rows.length ? rows[0].offsetHeight : 0;
+      if (rowH && listBox.scrollHeight > listBox.clientHeight + 1) {
+        const pad = 8; // 4px top + bottom list padding
+        const content = listBox.clientHeight - pad;
+        const fullRows = Math.max(1, Math.floor((content - rowH * 0.6) / rowH));
+        listBox.style.flex = "none";
+        listBox.style.height = fullRows * rowH + rowH * 0.6 + pad + 2 + "px"; // +2 for borders
+        btnRow.style.marginTop = "auto";
+      }
+    });
+  }
+
   async function scan({ force = false } = {}) {
     // Take over the popover: drop the settings view, show a fresh log, and lock
     // the ⚙ so settings can't reopen mid-scan.
@@ -606,14 +799,37 @@
       // Undated conversations can't be placed in a span; fold them into the most
       // recent needed span so they still get uploaded exactly once.
       const lastSpan = needed[needed.length - 1];
-      let synced = 0;
-      for (const span of needed) {
+      const groups = needed.map((span) => {
         const s = Date.parse(span.start);
         const e = Date.parse(span.end);
-        const inSpan = list.filter((c) => {
-          const t = tsOf(c);
-          return isNaN(t) ? span === lastSpan : t >= s && t < e;
-        });
+        return {
+          span,
+          items: list.filter((c) => {
+            const t = tsOf(c);
+            return isNaN(t) ? span === lastSpan : t >= s && t < e;
+          }),
+        };
+      });
+
+      // Nothing is fetched or uploaded until the user has reviewed the exact
+      // list and confirmed. Cancel aborts the whole scan — no span is marked
+      // as scanned, so the next scan offers the same conversations again.
+      const candidates = groups.flatMap((g) => g.items);
+      let keep = null;
+      if (candidates.length) {
+        keep = await confirmUpload(candidates);
+        if (!keep) {
+          log("Cancelled — nothing was uploaded.");
+          return;
+        }
+        const dropped = candidates.length - keep.size;
+        if (dropped) log("  excluding " + dropped + " conversation(s)");
+      }
+
+      let synced = 0;
+      for (const g of groups) {
+        const span = g.span;
+        const inSpan = keep ? g.items.filter((c) => keep.has(c.id)) : g.items;
 
         let conversations = [];
         if (inSpan.length) {
@@ -633,8 +849,9 @@
             return full;
           });
         } else {
-          // No conversations in this span — an empty upload records it as
-          // scanned-and-empty so the server never asks for it again.
+          // No conversations left in this span (none existed, or the user
+          // excluded them all) — an empty upload records it as scanned so the
+          // server never asks for it again.
           log("Syncing " + fmtSpan(span) + " — empty");
         }
 
