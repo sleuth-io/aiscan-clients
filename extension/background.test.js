@@ -11,7 +11,16 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const zlib = require("node:zlib");
 
-const { buildTar, gzip, plan, upload } = require("./background.js");
+const {
+  buildTar,
+  gzip,
+  plan,
+  upload,
+  canStartSync,
+  handleMessage,
+  getSyncState,
+  watchdogTick,
+} = require("./background.js");
 
 const td = new TextDecoder();
 const field = (tar, off, len) => td.decode(tar.subarray(off, off + len));
@@ -23,9 +32,11 @@ const SPAN = {
   end: "2026-07-01T00:00:00.000Z",
 };
 
-// Wire up global.chrome + global.fetch for a plan()/upload() call; returns the
-// captured request and registers teardown. A cached, non-expired token skips the
-// device flow. `respond` overrides the fetch reply (e.g. a GraphQL plan body).
+// Wire up global.chrome + global.fetch for the service functions and the sync
+// orchestrator; returns the captured request/tab activity and registers
+// teardown. A cached, non-expired token skips the device flow. `respond`
+// overrides the fetch reply (e.g. a GraphQL plan body). The tabs stub answers
+// ping/scan:start like a loaded, ready content script.
 function mockEnv(t, { instanceUrl = "https://app.skills.new", respond } = {}) {
   const store = {
     config: { instanceUrl },
@@ -35,6 +46,9 @@ function mockEnv(t, { instanceUrl = "https://app.skills.new", respond } = {}) {
       expiresAt: Date.now() + 3_600_000,
     },
   };
+  const session = {};
+  const tabCalls = { created: [], removed: [], messages: [] };
+  let nextTabId = 100;
   const cap = {};
   global.chrome = {
     runtime: {},
@@ -45,7 +59,26 @@ function mockEnv(t, { instanceUrl = "https://app.skills.new", respond } = {}) {
         set: async (obj) => Object.assign(store, obj),
         remove: async (key) => delete store[key],
       },
+      // storage.session round-trips through structuredClone like the real one,
+      // so a mutation after set() can't leak into the stored snapshot.
+      session: {
+        get: async (key) => ({ [key]: structuredClone(session[key]) }),
+        set: async (obj) => Object.assign(session, structuredClone(obj)),
+      },
     },
+    tabs: {
+      create: async (opts) => {
+        tabCalls.created.push(opts);
+        return { id: ++nextTabId };
+      },
+      remove: async (id) => void tabCalls.removed.push(id),
+      sendMessage: async (id, m) => {
+        tabCalls.messages.push({ id, m });
+        if (m.type === "ping") return { ready: true };
+        if (m.type === "scan:start") return { ok: true };
+      },
+    },
+    alarms: { create: async () => {}, clear: async () => {} },
   };
   global.fetch = async (url, opts) => {
     cap.url = url;
@@ -61,8 +94,23 @@ function mockEnv(t, { instanceUrl = "https://app.skills.new", respond } = {}) {
     delete global.chrome;
     delete global.fetch;
   });
-  return { cap, instanceUrl, store };
+  return { cap, instanceUrl, store, session, tabCalls };
 }
+
+// Poll until `fn` returns a truthy value — the orchestrator advances through
+// its states asynchronously after sync:start returns.
+async function waitFor(fn, ms = 2000) {
+  const end = Date.now() + ms;
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() > end) throw new Error("condition not met in time");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+const stateWhere = (pred) => () =>
+  getSyncState().then((s) => (s && pred(s) ? s : null));
 
 // ---------------------------------------------------------------------------
 // tar + gzip packaging
@@ -117,7 +165,7 @@ test("upload marks a re-send with force so the server re-parses it", async (t) =
   const { cap } = mockEnv(t);
   const conv = { uuid: "u1", chat_messages: [{ sender: "human", text: "hi", content: [] }] };
 
-  await upload({ provider: "claude-ai", conversations: [conv], span: SPAN, force: true }, 1);
+  await upload({ provider: "claude-ai", conversations: [conv], span: SPAN, force: true });
   assert.equal(new URL(cap.url).searchParams.get("force"), "1");
 });
 
@@ -125,7 +173,7 @@ test("upload omits force on an ordinary sync", async (t) => {
   const { cap } = mockEnv(t);
   const conv = { uuid: "u1", chat_messages: [{ sender: "human", text: "hi", content: [] }] };
 
-  await upload({ provider: "claude-ai", conversations: [conv], span: SPAN }, 1);
+  await upload({ provider: "claude-ai", conversations: [conv], span: SPAN });
   assert.equal(new URL(cap.url).searchParams.get("force"), null);
 });
 
@@ -137,10 +185,11 @@ test("upload files claude.ai conversations as raw JSON under claude-web/", async
     chat_messages: [{ sender: "human", text: "hi", content: [] }],
   };
 
-  const res = await upload(
-    { provider: "claude-ai", conversations: [conv], span: SPAN },
-    1,
-  );
+  const res = await upload({
+    provider: "claude-ai",
+    conversations: [conv],
+    span: SPAN,
+  });
 
   assert.deepEqual(res, {
     ok: true,
@@ -171,7 +220,7 @@ test("upload files chatgpt conversations as raw JSON under chatgpt/", async (t) 
   };
 
   // No span supplied → the all-time fallback [epoch, now].
-  const res = await upload({ provider: "chatgpt", conversations: [conv] }, 1);
+  const res = await upload({ provider: "chatgpt", conversations: [conv] });
 
   assert.equal(res.sessions, 1);
   assert.ok(cap.url.includes("source=chatgpt-web"));
@@ -203,10 +252,11 @@ test("upload ships gemini conversations as raw JSON under gemini/", async (t) =>
     ],
   };
 
-  const res = await upload(
-    { provider: "gemini", conversations: [conv], span: SPAN },
-    1,
-  );
+  const res = await upload({
+    provider: "gemini",
+    conversations: [conv],
+    span: SPAN,
+  });
 
   assert.equal(res.sessions, 1);
   assert.ok(cap.url.includes("source=gemini-web"));
@@ -218,13 +268,10 @@ test("upload ships gemini conversations as raw JSON under gemini/", async (t) =>
 test("upload skips gemini conversations whose payload failed to load", async (t) => {
   mockEnv(t);
   await assert.rejects(
-    upload(
-      {
-        provider: "gemini",
-        conversations: [{ conversation_id: "c_1", payload: null }],
-      },
-      1,
-    ),
+    upload({
+      provider: "gemini",
+      conversations: [{ conversation_id: "c_1", payload: null }],
+    }),
     /nothing to upload/,
   );
 });
@@ -232,7 +279,7 @@ test("upload skips gemini conversations whose payload failed to load", async (t)
 test("upload throws when there is nothing capturable", async (t) => {
   mockEnv(t);
   await assert.rejects(
-    upload({ provider: "chatgpt", conversations: [null] }, 1),
+    upload({ provider: "chatgpt", conversations: [null] }),
     /nothing to upload/,
   );
 });
@@ -241,10 +288,11 @@ test("upload posts an empty body to record a confirmed-empty span", async (t) =>
   const { cap } = mockEnv(t);
   // An empty conversation set is a deliberate confirmed-empty window, not an
   // error: the server records the span as scanned so it never re-asks for it.
-  const res = await upload(
-    { provider: "claude-ai", conversations: [], span: SPAN },
-    1,
-  );
+  const res = await upload({
+    provider: "claude-ai",
+    conversations: [],
+    span: SPAN,
+  });
 
   assert.equal(res.sessions, 0);
   assert.equal(cap.opts.body.length, 0); // zero-length body
@@ -279,7 +327,7 @@ test("plan requests needed spans for the provider's source", async (t) => {
   const available = [
     { start: "2026-01-01T00:00:00Z", end: "2026-07-01T00:00:00Z" },
   ];
-  const res = await plan({ provider: "claude-ai", available }, 1);
+  const res = await plan({ provider: "claude-ai", available });
 
   assert.ok(cap.url.endsWith("/graphql"));
   assert.equal(cap.opts.headers.authorization, "Bearer tok");
@@ -302,7 +350,7 @@ test("plan surfaces graphql errors", async (t) => {
     }),
   });
   await assert.rejects(
-    plan({ provider: "claude-ai", available: [] }, 1),
+    plan({ provider: "claude-ai", available: [] }),
     /aiscan not enabled/,
   );
 });
@@ -312,8 +360,215 @@ test("plan clears the cached token and reports a rejected token", async (t) => {
     respond: async () => ({ ok: false, status: 401, text: async () => "" }),
   });
   await assert.rejects(
-    plan({ provider: "claude-ai", available: [] }, 1),
+    plan({ provider: "claude-ai", available: [] }),
     /unauthorized/,
   );
   assert.equal(store.auth, undefined); // cache cleared so the next scan re-auths
+});
+
+// ---------------------------------------------------------------------------
+// sync orchestration: the tab page starts a run, the worker walks the sites
+// one at a time (open tab → ping → scan → settle → next), all state in
+// chrome.storage.session.
+// ---------------------------------------------------------------------------
+
+test("canStartSync only rejects a genuinely live run", () => {
+  const now = Date.now();
+  assert.ok(canStartSync(null, now)); // no run at all
+  assert.ok(canStartSync({ phase: "done", lastProgressAt: now }, now));
+  assert.ok(canStartSync({ phase: "error", lastProgressAt: now }, now));
+  assert.ok(!canStartSync({ phase: "running", lastProgressAt: now }, now));
+  // A run with no progress for well past the stall window is a corpse — the
+  // worker died in a way the watchdog hasn't cleaned up — and may be taken over.
+  assert.ok(
+    canStartSync({ phase: "running", lastProgressAt: now - 4 * 60_000 }, now),
+  );
+  // Approval legitimately takes minutes; authorizing gets the longer window.
+  assert.ok(
+    !canStartSync(
+      { phase: "authorizing", lastProgressAt: now - 4 * 60_000 },
+      now,
+    ),
+  );
+  assert.ok(
+    canStartSync(
+      { phase: "authorizing", lastProgressAt: now - 11 * 60_000 },
+      now,
+    ),
+  );
+});
+
+test("a sync run walks a site from open to done", async (t) => {
+  const { tabCalls } = mockEnv(t);
+  const res = await handleMessage({
+    type: "sync:start",
+    sites: ["claude.ai"],
+    force: false,
+  });
+  assert.equal(res.ok, true);
+
+  // The orchestrator opens the site as a background tab and starts a scan.
+  const scanning = await waitFor(
+    stateWhere((s) => s.sites[0].status === "scanning"),
+  );
+  assert.deepEqual(tabCalls.created[0], {
+    url: "https://claude.ai/",
+    active: false,
+  });
+  const tabId = scanning.sites[0].tabId;
+  assert.ok(tabCalls.messages.some((m) => m.m.type === "scan:start"));
+
+  // Progress lines from the content script land in the site's log; one with a
+  // stale syncId (a zombie tab from an older run) is dropped.
+  await handleMessage(
+    { type: "scan:progress", syncId: res.syncId, line: "Listing…" },
+    { tab: { id: tabId } },
+  );
+  await handleMessage(
+    { type: "scan:progress", syncId: "sync-stale", line: "nope" },
+    { tab: { id: tabId } },
+  );
+
+  // scan:done settles the site, closes its tab, and finishes the run.
+  await handleMessage(
+    { type: "scan:done", syncId: res.syncId, ok: true, synced: 3 },
+    { tab: { id: tabId } },
+  );
+  const done = await waitFor(stateWhere((s) => s.phase === "done"));
+  assert.equal(done.sites[0].status, "done");
+  assert.equal(done.sites[0].synced, 3);
+  assert.ok(done.sites[0].log.includes("Listing…"));
+  assert.ok(!done.sites[0].log.includes("nope"));
+  assert.deepEqual(tabCalls.removed, [tabId]);
+});
+
+test("a failed site is recorded and the run moves to the next one", async (t) => {
+  const { tabCalls } = mockEnv(t);
+  const res = await handleMessage({
+    type: "sync:start",
+    sites: ["claude.ai", "chatgpt.com"],
+  });
+  const first = await waitFor(
+    stateWhere((s) => s.sites[0].status === "scanning"),
+  );
+
+  // Site 1 reports failure (e.g. not signed in) — the run continues.
+  await handleMessage(
+    {
+      type: "scan:done",
+      syncId: res.syncId,
+      ok: false,
+      error: "not signed in to claude.ai",
+    },
+    { tab: { id: first.sites[0].tabId } },
+  );
+  const second = await waitFor(
+    stateWhere((s) => s.sites[1].status === "scanning"),
+  );
+  assert.equal(second.sites[0].status, "failed");
+  assert.equal(second.sites[0].error, "not signed in to claude.ai");
+  assert.equal(tabCalls.created[1].url, "https://chatgpt.com/");
+
+  await handleMessage(
+    { type: "scan:done", syncId: res.syncId, ok: true, synced: 2 },
+    { tab: { id: second.sites[1].tabId } },
+  );
+  const done = await waitFor(stateWhere((s) => s.phase === "done"));
+  assert.equal(done.sites[1].status, "done");
+});
+
+test("a second sync:start while one runs is rejected", async (t) => {
+  mockEnv(t);
+  const first = await handleMessage({
+    type: "sync:start",
+    sites: ["claude.ai"],
+  });
+  assert.equal(first.ok, true);
+  await waitFor(stateWhere((s) => s.sites[0].status === "scanning"));
+
+  const second = await handleMessage({
+    type: "sync:start",
+    sites: ["claude.ai"],
+  });
+  assert.deepEqual(second, { ok: false, error: "already-running" });
+
+  // Finish cleanly so no orchestration is in flight when the mocks tear down.
+  await handleMessage({ type: "sync:cancel" });
+  await waitFor(stateWhere((s) => s.phase === "cancelled"));
+});
+
+test("cancel skips the remaining sites and closes the open tab", async (t) => {
+  const { tabCalls } = mockEnv(t);
+  await handleMessage({
+    type: "sync:start",
+    sites: ["claude.ai", "chatgpt.com"],
+  });
+  const scanning = await waitFor(
+    stateWhere((s) => s.sites[0].status === "scanning"),
+  );
+
+  const res = await handleMessage({ type: "sync:cancel" });
+  assert.deepEqual(res, { ok: true });
+  const cancelled = await waitFor(stateWhere((s) => s.phase === "cancelled"));
+  assert.equal(cancelled.sites[0].status, "skipped");
+  assert.equal(cancelled.sites[1].status, "skipped");
+  assert.deepEqual(tabCalls.removed, [scanning.sites[0].tabId]);
+});
+
+test("the watchdog fails a stalled site and the run moves on", async (t) => {
+  mockEnv(t);
+  const res = await handleMessage({
+    type: "sync:start",
+    sites: ["claude.ai", "chatgpt.com"],
+  });
+  await waitFor(stateWhere((s) => s.sites[0].status === "scanning"));
+
+  // Simulate a dead content script: rewind the liveness clock past the stall
+  // window, then let the alarm handler run.
+  const stalled = await getSyncState();
+  stalled.lastProgressAt = Date.now() - 10 * 60_000;
+  await global.chrome.storage.session.set({ syncState: stalled });
+  await watchdogTick();
+
+  const second = await waitFor(
+    stateWhere((s) => s.sites[1].status === "scanning"),
+  );
+  assert.equal(second.sites[0].status, "failed");
+  assert.match(second.sites[0].error, /stalled/);
+
+  await handleMessage(
+    { type: "scan:done", syncId: res.syncId, ok: true, synced: 1 },
+    { tab: { id: second.sites[1].tabId } },
+  );
+  await waitFor(stateWhere((s) => s.phase === "done"));
+});
+
+test("the watchdog gives a pending mid-run re-auth the longer window", async (t) => {
+  mockEnv(t);
+  await handleMessage({ type: "sync:start", sites: ["claude.ai"] });
+  await waitFor(stateWhere((s) => s.sites[0].status === "scanning"));
+
+  // A token expiring mid-run leaves a prompt pending while plan/upload wait on
+  // the approval page: progress stalls past the site window, but the user is
+  // legitimately busy approving — the run must survive.
+  let s = await getSyncState();
+  s.auth = { userCode: "ABCD", verifyUrl: "https://x" };
+  s.lastProgressAt = Date.now() - 5 * 60_000;
+  await global.chrome.storage.session.set({ syncState: s });
+  await watchdogTick();
+  s = await getSyncState();
+  assert.equal(s.sites[0].status, "scanning");
+
+  // Past the auth window the approval is presumed abandoned.
+  s.lastProgressAt = Date.now() - 11 * 60_000;
+  await global.chrome.storage.session.set({ syncState: s });
+  await watchdogTick();
+  const done = await waitFor(stateWhere((x) => x.phase === "done"));
+  assert.equal(done.sites[0].status, "failed");
+});
+
+test("sync:start with no valid sites is rejected", async (t) => {
+  mockEnv(t);
+  const res = await handleMessage({ type: "sync:start", sites: ["nope.com"] });
+  assert.deepEqual(res, { ok: false, error: "no sites selected" });
 });

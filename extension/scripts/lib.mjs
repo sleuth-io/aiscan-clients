@@ -18,15 +18,26 @@ export function isPackableVersion(version) {
   return parts.every((p) => /^\d+$/.test(p) && !(p.length > 1 && p.startsWith('0')) && Number(p) <= 65535)
 }
 
-// The runtime scripts a manifest references (background + content scripts). Both the build (what to
-// copy) and the Chrome pack (what to zip) derive their file list from this single source of truth,
-// so adding or renaming a script can't silently ship a manifest that points at a missing file.
+// The extension's tab page (opened via chrome.runtime.getURL, so referenced nowhere in the
+// manifest). Listed here so the build stages it and the Chrome pack zips it — without this the
+// page would silently be missing from dist and the toolbar icon would open a dead URL.
+export const APP_PAGE_FILES = ['app.html', 'app.js', 'app.css']
+
+// The runtime files a manifest references (background + content scripts + icons) plus the app
+// page files above. Both the build (what to copy) and the Chrome pack (what to zip) derive their
+// file list from this single source of truth, so adding or renaming a file can't silently ship a
+// manifest that points at a missing file.
 export function runtimeFilesFromManifest(manifest) {
   const files = new Set()
   const bg = manifest.background || {}
   if (bg.service_worker) files.add(bg.service_worker)
   for (const s of bg.scripts || []) files.add(s)
   for (const cs of manifest.content_scripts || []) for (const j of cs.js || []) files.add(j)
+  for (const p of Object.values(manifest.icons || {})) files.add(p)
+  const di = (manifest.action || {}).default_icon
+  if (typeof di === 'string') files.add(di)
+  else for (const p of Object.values(di || {})) files.add(p)
+  for (const f of APP_PAGE_FILES) files.add(f)
   return [...files]
 }
 

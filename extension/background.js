@@ -184,7 +184,7 @@ async function pollForToken(
   );
 }
 
-async function ensureToken(instanceUrl, tabId) {
+async function ensureToken(instanceUrl, onPrompt) {
   const cached = await getCachedToken(instanceUrl);
   if (cached) return cached;
 
@@ -203,16 +203,13 @@ async function ensureToken(instanceUrl, tabId) {
         encodeURIComponent(auth.user_code);
     }
   }
-  // Open the approval page; pass the code along only as a fallback to display.
+  // Open the approval page; hand the prompt (code + link) to the caller so the
+  // tab page can render it as a fallback in case the opened tab gets lost.
   if (verifyUrl) chrome.tabs.create({ url: verifyUrl });
-  if (tabId != null) {
-    chrome.tabs
-      .sendMessage(tabId, {
-        type: "authPrompt",
-        userCode: auth.user_code,
-        verifyUrl,
-      })
-      .catch(() => {});
+  if (onPrompt) {
+    try {
+      onPrompt({ userCode: auth.user_code || null, verifyUrl: verifyUrl || null });
+    } catch (_) {}
   }
 
   const token = await pollForToken(
@@ -222,6 +219,12 @@ async function ensureToken(instanceUrl, tabId) {
     auth.expires_in,
   );
   await storeToken(instanceUrl, token.access_token, token.expires_in);
+  // Approval done — tell the caller to take the prompt down again.
+  if (onPrompt) {
+    try {
+      onPrompt(null);
+    } catch (_) {}
+  }
   return token.access_token;
 }
 
@@ -272,10 +275,13 @@ const PLAN_QUERY =
 // `msg.available` is the client's discovered span set ([{start,end}] ISO 8601).
 // Returns { ok, neededSpans, reportsUrl }; throws on auth/GraphQL errors so the
 // message handler can report them.
-async function plan(msg, tabId) {
+async function plan(msg) {
   const instanceUrl = await getInstanceUrl();
   const cfg = PROVIDER_CFG[msg.provider] || PROVIDER_CFG["claude-ai"];
-  const token = await ensureToken(instanceUrl, tabId);
+  // The token is pre-warmed when a sync starts; this only re-authorizes if it
+  // expired mid-run, in which case the prompt goes into the run state so the
+  // tab page can show it.
+  const token = await ensureToken(instanceUrl, syncAuthPrompt);
 
   const res = await fetch(instanceUrl + "/graphql", {
     method: "POST",
@@ -319,7 +325,7 @@ async function plan(msg, tabId) {
 // span. An empty conversation set is a deliberate confirmed-empty window: we
 // still POST (with an empty body) so the server records the span as scanned and
 // never asks for it again. captured_start/captured_end come from msg.span.
-async function upload(msg, tabId) {
+async function upload(msg) {
   const instanceUrl = await getInstanceUrl();
   const conversations = Array.isArray(msg.conversations)
     ? msg.conversations
@@ -356,7 +362,7 @@ async function upload(msg, tabId) {
     ? await gzip(buildTar(files, mtime))
     : new Uint8Array(0);
 
-  const token = await ensureToken(instanceUrl, tabId);
+  const token = await ensureToken(instanceUrl, syncAuthPrompt);
   const url =
     instanceUrl +
     "/api/aiscan/ingest?source=" +
@@ -402,21 +408,397 @@ async function upload(msg, tabId) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Sync orchestration — the extension tab page (app.js) starts a run; this
+// worker walks the selected sites one at a time: open the site in a background
+// tab, wait for its content script, tell it to scan, collect its progress,
+// close the tab, move on. All run state lives in chrome.storage.session: the
+// tab page renders purely from it (closing and reopening the page mid-run just
+// re-renders the current state), and this worker re-reads it on every event,
+// so an MV3 worker restart mid-run loses nothing — the content script's next
+// message wakes the worker, and the watchdog alarm covers the one stretch that
+// has no inbound events (the ping poll after opening a tab).
+// ---------------------------------------------------------------------------
+
+const SITES = {
+  "claude.ai": { url: "https://claude.ai/" },
+  "chatgpt.com": { url: "https://chatgpt.com/" },
+  // /app is the signed-in chat UI; the bare origin can land on a marketing page
+  // without the WIZ payload the content script scrapes its tokens from.
+  "gemini.google.com": { url: "https://gemini.google.com/app" },
+};
+
+const WATCHDOG_ALARM = "aiscan-watchdog";
+const SITE_STALL_MS = 3 * 60_000; // no progress from the current site → fail it
+const AUTH_STALL_MS = 10 * 60_000; // approval never came → fail the run
+const PING_INTERVAL_MS = 500;
+const PING_TIMEOUT_MS = 30_000;
+const LOG_CAP = 200; // per-site log lines kept; older ones are dropped
+
+// Whether a new run may start: yes unless one is genuinely in flight. A run
+// whose lastProgressAt stopped moving long ago is a corpse (the worker died in
+// a way the watchdog hasn't cleaned up yet) and may be taken over.
+function canStartSync(state, now) {
+  if (!state) return true;
+  if (state.phase !== "authorizing" && state.phase !== "running") return true;
+  const limit = state.phase === "authorizing" ? AUTH_STALL_MS : SITE_STALL_MS;
+  return now - state.lastProgressAt > limit;
+}
+
+async function getSyncState() {
+  const { syncState } = await chrome.storage.session.get("syncState");
+  return syncState || null;
+}
+
+// Serialized read-modify-write on the run state. `fn` mutates the state in
+// place, or returns false to abort (nothing written, resolves null). Every
+// write bumps lastProgressAt — the watchdog's liveness signal. Serialization
+// matters because progress messages arrive faster than storage round-trips
+// complete; unserialized, two handlers would read the same snapshot and one
+// write would silently swallow the other.
+let stateWriteChain = Promise.resolve();
+function updateSyncState(fn) {
+  const run = async () => {
+    const state = await getSyncState();
+    if (!state || fn(state) === false) return null;
+    state.lastProgressAt = Date.now();
+    await chrome.storage.session.set({ syncState: state });
+    return state;
+  };
+  const p = stateWriteChain.then(run, run);
+  stateWriteChain = p.catch(() => {});
+  return p;
+}
+
+// During a run the device-code prompt goes into the state for the tab page to
+// render (code + approval link); ensureToken calls this again with null once
+// the token arrives, taking the prompt down.
+function syncAuthPrompt(prompt) {
+  return updateSyncState((s) => {
+    if (s.phase !== "authorizing" && s.phase !== "running") return false;
+    s.auth = prompt;
+  });
+}
+
+async function startSync(hosts, force) {
+  const existing = await getSyncState();
+  if (!canStartSync(existing, Date.now()))
+    return { ok: false, error: "already-running" };
+
+  const selected = (Array.isArray(hosts) ? hosts : []).filter((h) => SITES[h]);
+  if (!selected.length) return { ok: false, error: "no sites selected" };
+
+  const instanceUrl = await getInstanceUrl();
+  const syncId =
+    "sync-" +
+    Date.now().toString(36) +
+    "-" +
+    Math.random().toString(36).slice(2, 8);
+  await chrome.storage.session.set({
+    syncState: {
+      syncId,
+      startedAt: Date.now(),
+      lastProgressAt: Date.now(),
+      phase: "authorizing",
+      auth: null,
+      force: !!force,
+      error: null,
+      reportsUrl: instanceUrl + "/aiscan",
+      currentIndex: -1,
+      sites: selected.map((host) => ({
+        host,
+        status: "pending",
+        tabId: null,
+        synced: 0,
+        error: null,
+        log: [],
+      })),
+    },
+  });
+  await chrome.alarms.create(WATCHDOG_ALARM, { periodInMinutes: 1 });
+  // Authorize + run in the background; the caller (the tab page) gets its
+  // answer now and follows the run through storage.
+  authorizeThenRun(syncId, instanceUrl);
+  return { ok: true, syncId };
+}
+
+// Authorize up front — before any site tab opens — so the approval tab is the
+// only thing the user might have to interact with, and it never pops up
+// mid-run between site tabs. The 5s poll interval keeps the worker alive
+// throughout (each fetch resets the MV3 idle timer).
+async function authorizeThenRun(syncId, instanceUrl) {
+  try {
+    await ensureToken(instanceUrl, syncAuthPrompt);
+  } catch (e) {
+    await updateSyncState((s) => {
+      if (s.syncId !== syncId || s.phase !== "authorizing") return false;
+      s.phase = "error";
+      s.auth = null;
+      s.error = e && e.message ? e.message : String(e);
+    });
+    await chrome.alarms.clear(WATCHDOG_ALARM);
+    return;
+  }
+  advance(syncId);
+}
+
+// Settle-and-move-on driver: pick the next pending site (flipping the run out
+// of "authorizing" on the first call — one write, so a worker restart can't
+// land between the phase change and the site pick), or finish the run.
+async function advance(syncId) {
+  const state = await updateSyncState((s) => {
+    if (s.syncId !== syncId) return false;
+    if (s.phase !== "running" && s.phase !== "authorizing") return false;
+    // One site in flight at a time — a stray second advance (e.g. settleSite's
+    // racing the watchdog's resume branch) must not open a second tab.
+    if (s.sites.some((x) => x.status === "waiting" || x.status === "scanning"))
+      return false;
+    s.phase = "running";
+    s.auth = null;
+    const idx = s.sites.findIndex((x) => x.status === "pending");
+    if (idx === -1) {
+      s.phase = "done";
+      s.currentIndex = -1;
+    } else {
+      s.currentIndex = idx;
+      s.sites[idx].status = "waiting";
+    }
+  });
+  if (!state) return;
+  if (state.phase === "done") {
+    await chrome.alarms.clear(WATCHDOG_ALARM);
+    return;
+  }
+  openAndScan(
+    syncId,
+    state.currentIndex,
+    state.sites[state.currentIndex].host,
+    state.force,
+  );
+}
+
+async function openAndScan(syncId, idx, host, force) {
+  let tab;
+  try {
+    // active:false — capture runs without stealing focus from the user.
+    tab = await chrome.tabs.create({ url: SITES[host].url, active: false });
+  } catch (e) {
+    return settleSite(syncId, idx, { ok: false, error: "could not open tab" });
+  }
+  const bound = await updateSyncState((s) => {
+    if (s.syncId !== syncId || s.sites[idx].status !== "waiting") return false;
+    s.sites[idx].tabId = tab.id;
+  });
+  if (!bound) {
+    // The run was cancelled/superseded while the tab opened — don't leak it.
+    try {
+      await chrome.tabs.remove(tab.id);
+    } catch (_) {}
+    return;
+  }
+
+  // The content script declares run_at document_idle; poll until it answers.
+  // The poll's own API calls keep the worker alive; if the worker dies anyway,
+  // the watchdog fails this site once progress stalls.
+  const deadline = Date.now() + PING_TIMEOUT_MS;
+  let ready = false;
+  while (Date.now() < deadline) {
+    const cur = await getSyncState();
+    if (!cur || cur.syncId !== syncId || cur.sites[idx].status !== "waiting")
+      return;
+    try {
+      const r = await chrome.tabs.sendMessage(tab.id, { type: "ping" });
+      if (r && r.ready) {
+        ready = true;
+        break;
+      }
+    } catch (_) {}
+    await new Promise((res) => setTimeout(res, PING_INTERVAL_MS));
+  }
+  if (!ready)
+    return settleSite(syncId, idx, {
+      ok: false,
+      error: "the page never finished loading",
+    });
+
+  let ack = null;
+  try {
+    ack = await chrome.tabs.sendMessage(tab.id, {
+      type: "scan:start",
+      syncId,
+      force,
+    });
+  } catch (_) {}
+  if (!ack || !ack.ok)
+    return settleSite(syncId, idx, {
+      ok: false,
+      error: (ack && ack.error) || "the scan did not start",
+    });
+  await updateSyncState((s) => {
+    if (s.syncId !== syncId || s.sites[idx].status !== "waiting") return false;
+    s.sites[idx].status = "scanning";
+  });
+}
+
+// Terminal transition for one site: mark it, close its tab, move on. The
+// status guard makes settling idempotent — scan:done, the watchdog, and
+// tabs.onRemoved can race, and only the first one acts.
+async function settleSite(syncId, idx, outcome, expectedTabId) {
+  let tabId = null;
+  const state = await updateSyncState((s) => {
+    if (s.syncId !== syncId) return false;
+    const site = s.sites[idx];
+    if (!site || (site.status !== "waiting" && site.status !== "scanning"))
+      return false;
+    if (expectedTabId != null && site.tabId !== expectedTabId) return false;
+    tabId = site.tabId;
+    site.tabId = null;
+    site.status = outcome.ok ? "done" : "failed";
+    site.synced = outcome.synced || 0;
+    site.error = outcome.ok ? null : outcome.error || "failed";
+    site.log.push(
+      outcome.ok
+        ? "Done — " + (outcome.synced || 0) + " sessions"
+        : "Failed: " + (outcome.error || "unknown"),
+    );
+  });
+  if (!state) return;
+  if (tabId != null) {
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch (_) {}
+  }
+  advance(syncId);
+}
+
+async function cancelSync() {
+  let openTabId = null;
+  await updateSyncState((s) => {
+    if (s.phase !== "authorizing" && s.phase !== "running") return false;
+    s.phase = "cancelled";
+    s.auth = null;
+    for (const site of s.sites) {
+      if (site.status === "waiting" || site.status === "scanning")
+        openTabId = site.tabId;
+      if (site.status !== "done" && site.status !== "failed") {
+        site.status = "skipped";
+        site.tabId = null;
+      }
+    }
+  });
+  await chrome.alarms.clear(WATCHDOG_ALARM);
+  if (openTabId != null) {
+    try {
+      await chrome.tabs.remove(openTabId);
+    } catch (_) {}
+  }
+  return { ok: true };
+}
+
+async function handleProgress(msg, sender) {
+  const senderTabId = sender && sender.tab && sender.tab.id;
+  await updateSyncState((s) => {
+    if (s.syncId !== msg.syncId) return false;
+    const site = s.sites[s.currentIndex];
+    if (!site || site.tabId !== senderTabId) return false;
+    site.log.push(String(msg.line));
+    if (site.log.length > LOG_CAP) site.log.splice(0, site.log.length - LOG_CAP);
+  });
+  return { ok: true };
+}
+
+async function handleScanDone(msg, sender) {
+  const senderTabId = sender && sender.tab && sender.tab.id;
+  const state = await getSyncState();
+  if (!state || state.syncId !== msg.syncId) return { ok: true };
+  await settleSite(
+    msg.syncId,
+    state.currentIndex,
+    { ok: !!msg.ok, synced: msg.synced || 0, error: msg.error },
+    senderTabId,
+  );
+  return { ok: true };
+}
+
+// Alarm-driven liveness check. Alarms (unlike setTimeout) survive worker
+// restarts, so a run whose worker died mid-flight still gets cleaned up: a
+// stalled site is failed and the run moves on; if the worker died in the gap
+// between settling a site and advancing, advance() resumes the walk.
+async function watchdogTick() {
+  const state = await getSyncState();
+  if (!state || (state.phase !== "running" && state.phase !== "authorizing")) {
+    await chrome.alarms.clear(WATCHDOG_ALARM);
+    return;
+  }
+  const now = Date.now();
+  if (state.phase === "authorizing") {
+    if (now - state.startedAt > AUTH_STALL_MS) {
+      await updateSyncState((s) => {
+        if (s.syncId !== state.syncId || s.phase !== "authorizing")
+          return false;
+        s.phase = "error";
+        s.auth = null;
+        s.error = "authorization timed out — sync again to retry";
+      });
+      await chrome.alarms.clear(WATCHDOG_ALARM);
+    }
+    return;
+  }
+  // A pending auth prompt during "running" means a token expired mid-run and
+  // plan/upload are waiting on the approval page — give that the same long
+  // window the up-front authorization gets, not the site-stall one.
+  const stallLimit = state.auth ? AUTH_STALL_MS : SITE_STALL_MS;
+  if (now - state.lastProgressAt <= stallLimit) return;
+  const site = state.sites[state.currentIndex];
+  if (site && (site.status === "waiting" || site.status === "scanning")) {
+    await settleSite(state.syncId, state.currentIndex, {
+      ok: false,
+      error: "stalled — no progress for 3 minutes",
+    });
+  } else {
+    // Settled but never advanced (worker died in between) — resume the walk.
+    advance(state.syncId);
+  }
+}
+
+// One dispatcher for every message the worker answers, so the Node tests can
+// drive the whole orchestration without a chrome.runtime listener.
+const MESSAGE_TYPES = new Set([
+  "plan",
+  "upload",
+  "sync:start",
+  "sync:cancel",
+  "scan:progress",
+  "scan:done",
+]);
+
+function handleMessage(msg, sender) {
+  switch (msg.type) {
+    case "plan":
+      return plan(msg);
+    case "upload":
+      return upload(msg);
+    case "sync:start":
+      return startSync(msg.sites, msg.force);
+    case "sync:cancel":
+      return cancelSync();
+    case "scan:progress":
+      return handleProgress(msg, sender);
+    case "scan:done":
+      return handleScanDone(msg, sender);
+  }
+}
+
 // Register the worker's event listeners only in the extension runtime. Under
 // Node (the unit tests below `require` this file) `chrome` is absent, so the
 // pure service functions can be exercised without the WebExtension APIs.
 if (typeof chrome !== "undefined" && chrome.runtime) {
-  // The whole UI (scan button, settings ⚙, status panel) lives on the page
-  // itself, injected by content.js — there is no popup. Clicking the toolbar
-  // icon just focuses an existing claude.ai/chatgpt.com tab, or opens one.
+  // Toolbar icon → the extension's own tab page (app.html): focus it if one is
+  // already open, otherwise open it. (No default_popup in the manifest, so the
+  // click reaches this listener.)
   chrome.action.onClicked.addListener(async () => {
-    const tabs = await chrome.tabs.query({
-      url: [
-        "https://claude.ai/*",
-        "https://chatgpt.com/*",
-        "https://gemini.google.com/*",
-      ],
-    });
+    const url = chrome.runtime.getURL("app.html");
+    const tabs = await chrome.tabs.query({ url });
     // Some matched tabs (e.g. devtools) can lack a usable id; fall through to
     // opening a fresh tab rather than throwing on an undefined id.
     const tab = tabs.find((t) => t && t.id != null);
@@ -425,20 +807,13 @@ if (typeof chrome !== "undefined" && chrome.runtime) {
       if (tab.windowId != null)
         await chrome.windows.update(tab.windowId, { focused: true });
     } else {
-      await chrome.tabs.create({ url: "https://claude.ai/" });
+      await chrome.tabs.create({ url });
     }
   });
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    const tabId = sender && sender.tab && sender.tab.id;
-    const handler =
-      msg && msg.type === "plan"
-        ? plan
-        : msg && msg.type === "upload"
-          ? upload
-          : null;
-    if (!handler) return false;
-    handler(msg, tabId)
+    if (!msg || !MESSAGE_TYPES.has(msg.type)) return false;
+    handleMessage(msg, sender)
       .then((r) => sendResponse(r))
       .catch((e) =>
         sendResponse({
@@ -448,11 +823,42 @@ if (typeof chrome !== "undefined" && chrome.runtime) {
       );
     return true; // keep the channel open for the async response
   });
+
+  // The user closing the current site's tab mid-scan fails that site and moves
+  // on (settleSite's status guard makes this a no-op for tabs we closed
+  // ourselves — their site is already settled by then).
+  chrome.tabs.onRemoved.addListener(async (tabId) => {
+    const state = await getSyncState();
+    if (!state || state.phase !== "running") return;
+    const site = state.sites[state.currentIndex];
+    if (site && site.tabId === tabId)
+      settleSite(state.syncId, state.currentIndex, {
+        ok: false,
+        error: "the tab was closed",
+      });
+  });
+
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === WATCHDOG_ALARM) watchdogTick();
+  });
 }
 
 // Export the pure service functions for the Node test runner. This block is
 // inert in the MV3 worker (no CommonJS `module` there), so it changes nothing
 // about how the extension loads.
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { buildTar, gzip, plan, upload, PROVIDER_CFG };
+  module.exports = {
+    buildTar,
+    gzip,
+    plan,
+    upload,
+    PROVIDER_CFG,
+    SITES,
+    canStartSync,
+    startSync,
+    cancelSync,
+    handleMessage,
+    getSyncState,
+    watchdogTick,
+  };
 }

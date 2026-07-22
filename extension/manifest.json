@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Sleuth AI Insights",
   "version": "0.0.0",
-  "description": "Captures your claude.ai, chatgpt.com, and Gemini conversations and uploads a redacted copy to Sleuth for analysis.",
-  "permissions": ["storage", "tabs"],
+  "description": "Captures your claude.ai, chatgpt.com, and gemini.google.com conversations and uploads a redacted copy to Sleuth for analysis.",
+  "permissions": ["storage", "tabs", "history", "alarms"],
   "host_permissions": [
     "https://claude.ai/*",
     "https://chatgpt.com/*",
@@ -24,8 +24,18 @@
       "run_at": "document_idle"
     }
   ],
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
   "action": {
-    "default_title": "Sleuth AI Insights — open claude.ai, chatgpt.com, or Gemini to scan"
+    "default_title": "Open Sleuth AI Insights",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png"
+    }
   },
   "browser_specific_settings": {
     "gecko": {

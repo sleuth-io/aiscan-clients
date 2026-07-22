@@ -33,7 +33,8 @@ key-shaped strings, and (configurably) file contents — before upload.
 
 ## How you can see it
 
-- The desktop tray (and the browser popup) show status and let you view what was last uploaded.
+- The desktop tray (and the browser extension's own page) show status and let you view what was
+  last uploaded.
 
 ## Updates
 

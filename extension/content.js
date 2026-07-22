@@ -4,25 +4,41 @@
 // A declared content script auto-runs in both Chrome and Firefox without a
 // separate host-permission grant, and its fetch() is same-origin to the site,
 // so it carries your first-party session credentials (exactly like running
-// fetch in the page console). It injects a small button + status panel; on
-// click it pulls the conversations raw and hands them to the background worker,
-// which authorizes and uploads them to the configured Pulse instance (the
-// cross-origin upload + OAuth can't run on the site's origin). Parsing is the
-// server's job — the client never transcodes.
+// fetch in the page console). It is headless: the extension's tab page (app.js)
+// starts a sync, the background worker opens this site in a tab and sends
+// "scan:start", and this script pulls the conversations raw and hands them to
+// the background worker, which authorizes and uploads them to the configured
+// Pulse instance (the cross-origin upload + OAuth can't run on the site's
+// origin). Progress goes back as "scan:progress" messages and the run ends
+// with a "scan:done"; the tab page renders both from the background's state.
+// Parsing is the server's job — the client never transcodes.
 //
-// Layout: provider adapters (what to fetch, per site) → DOM helper → UI (the
-// button + settings/log popovers) → HTTP helpers → scan orchestration.
+// Layout: provider adapters (what to fetch, per site) → HTTP helpers → scan
+// orchestration → message handling.
 
 (function () {
   if (window.__aiscanInjected) return;
   window.__aiscanInjected = true;
 
   const CONCURRENCY = 5;
-  const DEFAULT_INSTANCE = "https://app.skills.new";
-  // Config (Pulse instance) is edited in the inline settings panel below; this
-  // is the default until it loads from chrome.storage. instanceUrl is read by
-  // background.js to know where to authorize and upload.
-  let cfg = { instanceUrl: DEFAULT_INSTANCE };
+
+  // The sync run this scan belongs to. Minted by the background orchestrator;
+  // echoed on every progress/done message so the orchestrator can drop
+  // messages from a tab that belongs to a cancelled or superseded run.
+  let currentSyncId = null;
+  let scanning = false;
+
+  // Progress line -> background worker. Fire-and-forget: a scan must not die
+  // because a status line had nowhere to go (e.g. the worker is mid-restart).
+  // These messages double as the MV3 keepalive — each one resets the worker's
+  // idle timer while a long fetch loop runs.
+  function report(line) {
+    try {
+      chrome.runtime
+        .sendMessage({ type: "scan:progress", syncId: currentSyncId, line })
+        .catch(() => {});
+    } catch (_) {}
+  }
 
   // ---- Provider adapters -------------------------------------------------
   // claude.ai, chatgpt.com, and gemini.google.com expose different chat APIs,
@@ -110,7 +126,7 @@
     },
     "gemini.google.com": {
       name: "gemini",
-      label: "Gemini",
+      label: "gemini.google.com",
       // Gemini's web backend speaks Google's `batchexecute` RPC (no REST). Calls
       // need an XSRF token (`at`) plus the build label / session id. The isolated
       // content world can't read window.WIZ_global_data, so we regex those out of
@@ -239,188 +255,6 @@
   };
   const provider = PROVIDERS[location.hostname] || PROVIDERS["claude.ai"];
 
-  // ---- Tiny DOM helper ---------------------------------------------------
-  // claude.ai enforces a Trusted-Types CSP that blocks string-to-HTML, so the
-  // whole UI is built from real nodes. `el` keeps that declarative: props map
-  // onto element properties (`style` -> cssText, `text` -> textContent, `on` ->
-  // an {event: handler} map, anything else set directly); children are nodes or
-  // strings (strings become text nodes).
-  function el(tag, props, children) {
-    const node = document.createElement(tag);
-    for (const [k, v] of Object.entries(props || {})) {
-      if (v == null) continue;
-      if (k === "style") node.style.cssText = v;
-      else if (k === "text") node.textContent = v;
-      else if (k === "on")
-        for (const [ev, fn] of Object.entries(v)) node.addEventListener(ev, fn);
-      else node[k] = v;
-    }
-    for (const c of [].concat(children == null ? [] : children)) {
-      if (c == null) continue;
-      node.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
-    }
-    return node;
-  }
-
-  // ---- UI: a split button (scan | ⚙) with settings + log popovers --------
-  const btn = el("button", {
-    text: "Scan and upload my chats",
-    title:
-      "Syncs your " +
-      provider.label +
-      " chats to aiscan — uploads only what the server still needs",
-    style:
-      "padding:8px 14px;background:#da7756;color:#fff;border:none;cursor:pointer;" +
-      "font:13px system-ui,sans-serif;border-right:1px solid rgba(0,0,0,.18)",
-  });
-
-  const gear = el("button", {
-    text: "⚙",
-    title: "Sleuth AI Insights settings (instance)",
-    style:
-      "padding:8px 11px 8px 9px;background:#c4634a;color:#fff;border:none;cursor:pointer;" +
-      "font:18px system-ui;line-height:1;display:flex;align-items:center",
-  });
-
-  // Inline settings popover — anchored above the gear so the user never leaves
-  // the page to edit the instance URL or to sign out. Reads/writes the same
-  // chrome.storage.local "config" that loads below and that background.js reads
-  // on upload; "Sign out" clears the cached OAuth token.
-  const settings = el("div", {
-    style:
-      "position:fixed;z-index:2147483647;bottom:56px;right:16px;width:340px;display:none;" +
-      "box-sizing:border-box;padding:12px;background:#1d1d1f;color:#eaeaea;border-radius:8px;" +
-      "font:13px system-ui,-apple-system,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35)",
-  });
-
-  const mkLabel = (text) =>
-    el("div", { style: "font-weight:600;margin:0 0 4px", text });
-  const mkHint = (text) =>
-    el("div", {
-      style: "color:#9a9aa0;font-size:11px;margin:2px 0 10px",
-      text,
-    });
-  const fieldCss =
-    "box-sizing:border-box;padding:5px 7px;border-radius:6px;border:1px solid #3a3a3f;" +
-    "background:#111113;color:#eaeaea";
-
-  // Persist immediately on every change — there is no Save button.
-  const persist = () => chrome.storage.local.set({ config: cfg });
-
-  // Pulse instance. Commits on blur/Enter, not per keystroke.
-  const instanceHeader = mkLabel("Pulse instance");
-  const instanceHint = mkHint(
-    "Where uploads go. e.g. http://dev.pulse.sleuth.io for local dev, https://app.skills.new for production.",
-  );
-  const instanceEl = el("input", {
-    type: "text",
-    placeholder: DEFAULT_INSTANCE,
-    style: fieldCss + ";width:100%;font:12px ui-monospace,Menlo,monospace",
-  });
-
-  // Account — Sign out.
-  const signoutBtn = el("button", {
-    text: "Sign out",
-    style:
-      "margin-top:8px;padding:7px 14px;background:#7a3b3b;color:#fff;border:none;" +
-      "border-radius:6px;cursor:pointer;font:13px system-ui",
-  });
-  const savedNote = el("span", {
-    style: "margin-left:10px;color:#7fd18a;font-size:12px",
-  });
-  const signoutHint = mkHint(
-    "Authorization happens automatically on your first scan (an approval tab opens). Sign out clears the cached token — use it after switching instances.",
-  );
-
-  // Compose the panel in display order, then mount it once.
-  [
-    instanceHeader,
-    instanceHint,
-    instanceEl,
-    signoutBtn,
-    savedNote,
-    signoutHint,
-  ].forEach((n) => settings.appendChild(n));
-  document.documentElement.appendChild(settings);
-
-  // Commit only on blur/Enter so transient or invalid mid-edit values never
-  // become the upload target. Empty falls back to the default; anything that
-  // isn't a valid http(s) URL reverts to the last saved value.
-  const commitInstance = () => {
-    const raw = instanceEl.value.trim();
-    if (!raw) {
-      cfg.instanceUrl = DEFAULT_INSTANCE;
-    } else {
-      let url;
-      try {
-        url = new URL(raw);
-      } catch (_) {
-        instanceEl.value = cfg.instanceUrl;
-        return;
-      }
-      if (url.protocol !== "http:" && url.protocol !== "https:") {
-        instanceEl.value = cfg.instanceUrl;
-        return;
-      }
-      cfg.instanceUrl = raw.replace(/\/+$/, "");
-    }
-    instanceEl.value = cfg.instanceUrl;
-    persist();
-  };
-  instanceEl.addEventListener("change", commitInstance);
-  instanceEl.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") instanceEl.blur();
-  });
-
-  const flash = (msg) => {
-    savedNote.textContent = msg;
-    setTimeout(() => (savedNote.textContent = ""), 1500);
-  };
-  signoutBtn.addEventListener("click", () => {
-    chrome.storage.local.remove("auth", () => flash("Signed out."));
-  });
-
-  gear.addEventListener("click", () => {
-    const showing = settings.style.display !== "none";
-    if (!showing) {
-      // Opening settings clears any previous scan log out of the popover.
-      panel.style.display = "none";
-      panel.textContent = "";
-      instanceEl.value = cfg.instanceUrl || DEFAULT_INSTANCE;
-      savedNote.textContent = "";
-    }
-    settings.style.display = showing ? "none" : "block";
-  });
-
-  // Split button: the wide main part runs the scan; the narrow ⚙ toggles the
-  // settings popover. Both live in one rounded bar so it reads as one control.
-  const bar = el(
-    "div",
-    {
-      style:
-        "position:fixed;z-index:2147483647;bottom:16px;right:16px;display:inline-flex;" +
-        "border-radius:8px;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.35)",
-    },
-    [btn, gear],
-  );
-  document.documentElement.appendChild(bar);
-
-  // Status log popover — shares the gear's anchor; scan() writes progress here.
-  const panel = el("div", {
-    style:
-      "position:fixed;z-index:2147483647;bottom:56px;right:16px;width:340px;max-height:260px;" +
-      "overflow:auto;display:none;padding:8px;background:#1d1d1f;color:#eaeaea;border-radius:8px;" +
-      "font:11px ui-monospace,Menlo,monospace;white-space:pre-wrap;box-shadow:0 2px 10px rgba(0,0,0,.35)",
-  });
-  document.documentElement.appendChild(panel);
-  // Append as a text node (not textContent +=) so DOM children like the report
-  // link aren't wiped on the next log line.
-  const log = (m) => {
-    panel.style.display = "block";
-    panel.appendChild(document.createTextNode(m + "\n"));
-    panel.scrollTop = panel.scrollHeight;
-  };
-
   // ---- HTTP helpers ------------------------------------------------------
   async function getJSON(url, extraHeaders) {
     const r = await fetch(url, {
@@ -473,7 +307,7 @@
     // With more than one chat org, name the one we scanned: which account the
     // data came from is exactly the kind of thing you should never have to guess.
     if (chat.length > 1)
-      log(
+      report(
         "  " +
           chat.length +
           ' chat orgs; scanning "' +
@@ -507,63 +341,13 @@
   const day = (iso) => new Date(iso).toISOString().slice(0, 10);
   const fmtSpan = (s) => day(s.start) + " … " + day(s.end);
 
-  // Append the "Open reports" link once a sync finishes. Reports live at the
-  // instance's /aiscan index — each sync only deposits evidence; the server
-  // builds the report separately.
-  function showReportsLink(url) {
-    panel.appendChild(
-      el("a", {
-        href: url,
-        target: "_blank",
-        rel: "noopener",
-        text: "Open reports",
-        style:
-          "display:inline-block;margin-top:8px;color:#ffd9b0;font-weight:600",
-      }),
-    );
-  }
-
-  // `force` re-sends everything in the window even though the server believes it
-  // already has it. It is a deliberate one-shot action, never a saved setting: left
-  // on, every scan would re-upload the whole window and re-do the server's work.
-  // The escape hatch, and deliberately a quiet one. Three things keep it from being
-  // a footgun: it appears only at the dead end (a sync that found nothing to do, which
-  // is the sole place someone with missing data gets stuck); it is worded as the
-  // symptom rather than the mechanism, so anyone whose data is fine has no reason to
-  // read past the first two words; and it is a one-shot action, not a setting, because
-  // a "force" left switched on would re-upload everything on every scan forever.
-  function showForceLink() {
-    panel.appendChild(
-      el("a", {
-        href: "#",
-        text: "Conversations missing? Send them again",
-        style:
-          "display:block;margin-top:10px;color:#b9b9b9;font-size:12px;" +
-          "text-decoration:underline;cursor:pointer",
-        on: {
-          click: (e) => {
-            e.preventDefault();
-            scan({ force: true });
-          },
-        },
-      }),
-    );
-  }
-
   async function scan({ force = false } = {}) {
-    // Take over the popover: drop the settings view, show a fresh log, and lock
-    // the ⚙ so settings can't reopen mid-scan.
-    btn.disabled = true;
-    gear.disabled = true;
-    bar.style.opacity = "0.55";
-    settings.style.display = "none";
-    panel.textContent = "";
-    panel.style.display = "block";
+    let synced = 0;
     try {
-      log("Listing " + provider.label + " conversations…");
+      report("Listing " + provider.label + " conversations…");
       const list = await provider.listConversations();
-      log("  found " + list.length + " conversations");
-      if (!list.length) return;
+      report("  found " + list.length + " conversations");
+      if (!list.length) return { ok: true, synced: 0 };
 
       // Offer the server our whole history (earliest activity … now); it replies
       // with just the spans it still needs, so we never re-fetch or re-upload
@@ -577,7 +361,7 @@
         },
       ];
 
-      log(
+      report(
         force
           ? "Asking the server for everything again…"
           : "Asking the server what it still needs…",
@@ -588,25 +372,18 @@
         available,
         force,
       });
-      if (!plan || !plan.ok) {
-        log("Sync plan failed: " + (plan && plan.error));
-        return;
-      }
+      if (!plan || !plan.ok)
+        return { ok: false, synced: 0, error: (plan && plan.error) || "sync plan failed" };
       const needed = plan.neededSpans || [];
       if (!needed.length) {
-        log("Already up to date — nothing to sync.");
-        showReportsLink(plan.reportsUrl);
-        // The one place someone whose data is missing ends up: they came to sync,
-        // were told there is nothing to do, and without this the trail stops here.
-        if (!force) showForceLink();
-        return;
+        report("Already up to date — nothing to sync.");
+        return { ok: true, synced: 0 };
       }
-      log("  " + needed.length + " span(s) to sync");
+      report("  " + needed.length + " span(s) to sync");
 
       // Undated conversations can't be placed in a span; fold them into the most
       // recent needed span so they still get uploaded exactly once.
       const lastSpan = needed[needed.length - 1];
-      let synced = 0;
       for (const span of needed) {
         const s = Date.parse(span.start);
         const e = Date.parse(span.end);
@@ -617,7 +394,7 @@
 
         let conversations = [];
         if (inSpan.length) {
-          log(
+          report(
             (force ? "Re-sending " : "Syncing ") +
               fmtSpan(span) +
               " — " +
@@ -629,13 +406,13 @@
             const full = await provider.fetchFull(item);
             done++;
             if (done % 5 === 0 || done === inSpan.length)
-              log("  " + done + "/" + inSpan.length);
+              report("  " + done + "/" + inSpan.length);
             return full;
           });
         } else {
           // No conversations in this span — an empty upload records it as
           // scanned-and-empty so the server never asks for it again.
-          log("Syncing " + fmtSpan(span) + " — empty");
+          report("Syncing " + fmtSpan(span) + " — empty");
         }
 
         const resp = await chrome.runtime.sendMessage({
@@ -649,43 +426,58 @@
           force,
         });
         if (resp && resp.ok) synced += resp.sessions;
-        else log("  upload failed: " + (resp && resp.error));
+        else report("  upload failed: " + (resp && resp.error));
       }
 
-      log("Synced " + synced + " sessions. Open the reports page:");
-      showReportsLink(plan.reportsUrl);
+      report("Synced " + synced + " sessions.");
+      return { ok: true, synced };
     } catch (e) {
-      log("ERROR: " + (e && e.message ? e.message : String(e)));
-    } finally {
-      btn.disabled = false;
-      gear.disabled = false;
-      bar.style.opacity = "1";
+      const error = e && e.message ? e.message : String(e);
+      report("ERROR: " + error);
+      return { ok: false, synced, error };
     }
   }
 
-  // Wrapped, not passed by reference: scan() takes an options object, and handing it
-  // the click event would make the button's behaviour depend on an event's properties.
-  btn.addEventListener("click", () => scan());
-
-  // The background worker authorizes via the OAuth device-code flow on first
-  // upload (or after a token expires). It opens the approval page in a new tab
-  // with the code already embedded, so the user just clicks "Authorize"; the
-  // code is shown only as a fallback in case the page doesn't prefill it.
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg && msg.type === "authPrompt") {
-      log(
-        'Click "Authorize" in the opened tab, then it continues automatically.',
-      );
-      if (msg.userCode) log("  (if asked for a code: " + msg.userCode + ")");
+  // ---- Message handling --------------------------------------------------
+  // The background orchestrator drives everything: "ping" answers its
+  // is-the-content-script-loaded poll after it opens this tab; "scan:start"
+  // kicks off a scan whose terminal result goes back as one "scan:done"
+  // (success, failure, or not-signed-in alike — the orchestrator marks the
+  // site and moves on to the next one either way).
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!msg) return false;
+    if (msg.type === "ping") {
+      sendResponse({ ready: true, host: location.hostname });
+      return false;
     }
+    if (msg.type === "scan:start") {
+      if (scanning) {
+        sendResponse({ ok: false, error: "busy" });
+        return false;
+      }
+      scanning = true;
+      currentSyncId = msg.syncId;
+      sendResponse({ ok: true }); // ack now; the result travels via scan:done
+      scan({ force: !!msg.force })
+        .then((result) => {
+          chrome.runtime
+            .sendMessage(
+              Object.assign(
+                { type: "scan:done", syncId: currentSyncId },
+                result,
+              ),
+            )
+            .catch(() => {});
+        })
+        .finally(() => {
+          scanning = false;
+        });
+      return false;
+    }
+    return false;
   });
 
   // Written by the removed session-selection feature (shipped in v0.1.2);
   // clear it so stale exclusion lists don't linger in storage.
   chrome.storage.local.remove("excluded", () => void chrome.runtime.lastError);
-
-  // Load saved config (instance) written by the settings panel.
-  chrome.storage.local.get("config", (d) => {
-    if (d && d.config) cfg = Object.assign(cfg, d.config);
-  });
 })();
