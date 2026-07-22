@@ -126,7 +126,7 @@
     },
     "gemini.google.com": {
       name: "gemini",
-      label: "Gemini",
+      label: "gemini.google.com",
       // Gemini's web backend speaks Google's `batchexecute` RPC (no REST). Calls
       // need an XSRF token (`at`) plus the build label / session id. The isolated
       // content world can't read window.WIZ_global_data, so we regex those out of

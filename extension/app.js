@@ -22,7 +22,7 @@ const HISTORY_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
 const SITES = [
   { host: "claude.ai", label: "claude.ai" },
   { host: "chatgpt.com", label: "chatgpt.com" },
-  { host: "gemini.google.com", label: "Gemini" },
+  { host: "gemini.google.com", label: "gemini.google.com" },
 ];
 
 const STATUS_TEXT = {

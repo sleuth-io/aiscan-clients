@@ -80,7 +80,8 @@ No build step — it's plain Manifest V3 JavaScript. Load it unpacked:
 
 Then:
 
-1. Make sure you're **logged in** to claude.ai / chatgpt.com / Gemini in the same browser.
+1. Make sure you're **logged in** to claude.ai / chatgpt.com / gemini.google.com in the same
+   browser.
 2. Click the **toolbar icon** — the extension's page opens in a tab. Sites you've visited
    recently are pre-checked; set the instance URL under **Settings** if it isn't
    `https://app.skills.new` (a different instance must also be added to the manifest's
