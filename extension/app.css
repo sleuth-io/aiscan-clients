@@ -1,8 +1,25 @@
-/* The extension's tab page. Same palette as the old on-page popovers
-   (#1d1d1f surfaces, #da7756 accent) so it reads as the same product. */
+/* The extension's tab page, styled to match the Pulse app (Skills by Sleuth)
+   in its dark theme: Inter, gray-900 cards on a gray-950 page, 6px-radius
+   controls, the Pulse primary blue for the main action, and primary-300/400
+   for links. Token values are lifted from the app's own palette
+   (--color-primary-*, --color-gray-*) as computed with the dark scheme. */
 
 :root {
   color-scheme: dark;
+  --primary-300: #84caff;
+  --primary-400: #53b1fd;
+  --primary-500: #2e90fa;
+  --primary-600: #1570ef;
+  --primary-950: #0f2d5c;
+  --gray-100: #e9eaea;
+  --gray-200: #d4d4d5;
+  --gray-300: #bebfc0;
+  --gray-400: #939497;
+  --gray-500: #7d7e82;
+  --gray-700: #515358;
+  --gray-800: #3c3e43;
+  --gray-900: #26282e;
+  --gray-950: #1a1c21;
 }
 
 * {
@@ -11,9 +28,16 @@
 
 body {
   margin: 0;
-  background: #131315;
-  color: #eaeaea;
-  font: 14px/1.5 system-ui, -apple-system, sans-serif;
+  background: var(--gray-950);
+  color: #fff;
+  font:
+    14px/1.5 Inter,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
 }
 
 main {
@@ -25,18 +49,23 @@ main {
 h1 {
   margin: 0 0 4px;
   font-size: 22px;
+  font-weight: 600;
+  color: var(--gray-100);
 }
 
 h2 {
   margin: 0 0 6px;
   font-size: 15px;
+  font-weight: 600;
+  color: var(--gray-100);
 }
 
 section {
-  margin-top: 28px;
+  margin-top: 24px;
   padding: 16px;
-  background: #1d1d1f;
-  border-radius: 10px;
+  background: var(--gray-900);
+  border: 1px solid var(--gray-800);
+  border-radius: 8px;
 }
 
 header {
@@ -45,17 +74,18 @@ header {
 
 .hint {
   margin: 2px 0 10px;
-  color: #9a9aa0;
+  color: var(--gray-400);
   font-size: 12px;
 }
 
 .note {
-  color: #9a9aa0;
+  color: var(--gray-400);
   font-size: 12px;
 }
 
 .field-label {
-  font-weight: 600;
+  font-weight: 500;
+  color: var(--gray-100);
 }
 
 /* Site checkboxes */
@@ -74,31 +104,48 @@ header {
   align-items: center;
   gap: 8px;
   cursor: pointer;
+  font-weight: 500;
+  color: var(--gray-100);
 }
 
 .site-list input[type="checkbox"] {
-  accent-color: #da7756;
+  accent-color: var(--primary-500);
   width: 15px;
   height: 15px;
 }
 
-/* Buttons */
+/* Buttons — primary is the Pulse blue; everything else is the app's dark
+   secondary look (gray-900 with a gray-700 ring). */
 button {
-  padding: 8px 16px;
-  border: none;
+  padding: 8px 12px;
+  border: 1px solid var(--gray-700);
   border-radius: 6px;
   cursor: pointer;
-  font: 13px system-ui, sans-serif;
+  font:
+    500 13px Inter,
+    system-ui,
+    sans-serif;
   color: #fff;
-  background: #3a3a3f;
+  background: var(--gray-900);
+}
+
+button:hover {
+  background: var(--gray-800);
 }
 
 button.primary {
-  background: #da7756;
+  background: var(--primary-500);
+  border-color: var(--primary-500);
+  color: #fff;
+}
+
+button.primary:hover {
+  background: var(--primary-600);
+  border-color: var(--primary-600);
 }
 
 button.danger {
-  background: #7a3b3b;
+  color: #fda29b;
 }
 
 button:disabled {
@@ -120,7 +167,8 @@ button:disabled {
   gap: 10px;
   cursor: pointer;
   font-size: 13px;
-  color: #9a9aa0;
+  font-weight: 500;
+  color: var(--gray-400);
   user-select: none;
 }
 
@@ -134,7 +182,7 @@ button:disabled {
   width: 34px;
   height: 18px;
   border-radius: 999px;
-  background: #3a3a3f;
+  background: var(--gray-700);
   position: relative;
   transition: background 0.15s;
   flex-shrink: 0;
@@ -148,20 +196,21 @@ button:disabled {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #eaeaea;
+  background: var(--gray-100);
   transition: transform 0.15s;
 }
 
 .switch input:checked + .slider {
-  background: #da7756;
+  background: var(--primary-500);
 }
 
 .switch input:checked + .slider::before {
   transform: translateX(16px);
+  background: #fff;
 }
 
 .switch input:focus-visible + .slider {
-  outline: 2px solid #da7756;
+  outline: 2px solid var(--primary-500);
   outline-offset: 2px;
 }
 
@@ -174,24 +223,31 @@ button:disabled {
   width: 100%;
   padding: 6px 8px;
   border-radius: 6px;
-  border: 1px solid #3a3a3f;
-  background: #111113;
-  color: #eaeaea;
+  border: 1px solid var(--gray-700);
+  background: var(--gray-950);
+  color: var(--gray-100);
   font: 12px ui-monospace, Menlo, monospace;
+}
+
+#instance-input:focus {
+  outline: 2px solid var(--primary-500);
+  outline-offset: -1px;
 }
 
 /* Progress */
 .auth-note {
   margin: 0 0 12px;
   padding: 10px 12px;
-  background: #33291f;
-  border: 1px solid #6a5335;
+  background: var(--primary-950);
+  border: 1px solid var(--primary-600);
   border-radius: 8px;
   font-size: 13px;
+  color: var(--primary-300);
 }
 
 .auth-note a {
-  color: #ffd9b0;
+  color: var(--primary-300);
+  font-weight: 500;
 }
 
 .progress-list {
@@ -202,7 +258,7 @@ button:disabled {
 
 .progress-list li {
   padding: 8px 0;
-  border-top: 1px solid #2a2a2e;
+  border-top: 1px solid var(--gray-800);
 }
 
 .progress-list li:first-child {
@@ -216,11 +272,12 @@ button:disabled {
 }
 
 .site-row .host {
-  font-weight: 600;
+  font-weight: 500;
+  color: var(--gray-100);
 }
 
 .site-row .detail {
-  color: #9a9aa0;
+  color: var(--gray-400);
   font-size: 12px;
 }
 
@@ -234,29 +291,29 @@ button:disabled {
 }
 
 .chip.pending {
-  background: #2a2a2e;
-  color: #9a9aa0;
+  background: var(--gray-800);
+  color: var(--gray-400);
 }
 
 .chip.waiting,
 .chip.scanning {
-  background: #4a3527;
-  color: #ffd9b0;
+  background: var(--primary-950);
+  color: var(--primary-300);
 }
 
 .chip.done {
-  background: #24402b;
-  color: #7fd18a;
+  background: #0e3b26;
+  color: #75e0a7;
 }
 
 .chip.failed {
-  background: #452626;
-  color: #e8a1a1;
+  background: #4a1710;
+  color: #fda29b;
 }
 
 .chip.skipped {
-  background: #2a2a2e;
-  color: #6f6f76;
+  background: var(--gray-800);
+  color: var(--gray-500);
 }
 
 details.log {
@@ -264,7 +321,7 @@ details.log {
 }
 
 details.log summary {
-  color: #9a9aa0;
+  color: var(--gray-400);
   font-size: 12px;
   cursor: pointer;
 }
@@ -274,9 +331,11 @@ details.log pre {
   padding: 8px;
   max-height: 220px;
   overflow: auto;
-  background: #111113;
+  background: var(--gray-950);
+  border: 1px solid var(--gray-800);
   border-radius: 6px;
   font: 11px ui-monospace, Menlo, monospace;
+  color: var(--gray-300);
   white-space: pre-wrap;
 }
 
@@ -286,19 +345,19 @@ details.log pre {
 
 .result-links a.reports {
   display: inline-block;
-  color: #ffd9b0;
-  font-weight: 600;
+  color: var(--primary-400);
+  font-weight: 500;
 }
 
 .result-links a.force {
   display: block;
   margin-top: 10px;
-  color: #b9b9b9;
+  color: var(--gray-400);
   font-size: 12px;
   text-decoration: underline;
   cursor: pointer;
 }
 
 .result-links .error {
-  color: #e8a1a1;
+  color: #fda29b;
 }
