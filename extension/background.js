@@ -549,6 +549,10 @@ async function advance(syncId) {
   const state = await updateSyncState((s) => {
     if (s.syncId !== syncId) return false;
     if (s.phase !== "running" && s.phase !== "authorizing") return false;
+    // One site in flight at a time — a stray second advance (e.g. settleSite's
+    // racing the watchdog's resume branch) must not open a second tab.
+    if (s.sites.some((x) => x.status === "waiting" || x.status === "scanning"))
+      return false;
     s.phase = "running";
     s.auth = null;
     const idx = s.sites.findIndex((x) => x.status === "pending");
@@ -740,7 +744,11 @@ async function watchdogTick() {
     }
     return;
   }
-  if (now - state.lastProgressAt <= SITE_STALL_MS) return;
+  // A pending auth prompt during "running" means a token expired mid-run and
+  // plan/upload are waiting on the approval page — give that the same long
+  // window the up-front authorization gets, not the site-stall one.
+  const stallLimit = state.auth ? AUTH_STALL_MS : SITE_STALL_MS;
+  if (now - state.lastProgressAt <= stallLimit) return;
   const site = state.sites[state.currentIndex];
   if (site && (site.status === "waiting" || site.status === "scanning")) {
     await settleSite(state.syncId, state.currentIndex, {

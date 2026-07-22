@@ -154,9 +154,12 @@ function renderProgress(state) {
   section.hidden = false;
 
   // Device-code approval prompt, while the background waits for the token.
+  // Shown whenever a prompt is pending — not just in the up-front
+  // "authorizing" phase: a token can also expire mid-run, in which case
+  // plan/upload re-authorize with the run still in "running".
   const authNote = $("auth-note");
   authNote.textContent = "";
-  if (state.phase === "authorizing") {
+  if (state.phase === "authorizing" || state.auth) {
     authNote.hidden = false;
     authNote.appendChild(
       document.createTextNode(
@@ -326,13 +329,14 @@ async function init() {
 
   await initSelection();
 
-  const { syncState } = await chrome.storage.session.get("syncState");
-  render(syncState || null);
-
-  // Everything after this point is push-rendered from the background's writes.
+  // Subscribe before the initial read so a background write landing between
+  // the two can't be missed — render is idempotent, so the possible duplicate
+  // render is harmless.
   chrome.storage.session.onChanged.addListener((changes) => {
     if (changes.syncState) render(changes.syncState.newValue || null);
   });
+  const { syncState } = await chrome.storage.session.get("syncState");
+  render(syncState || null);
 }
 
 init();

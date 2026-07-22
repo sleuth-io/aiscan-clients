@@ -543,6 +543,30 @@ test("the watchdog fails a stalled site and the run moves on", async (t) => {
   await waitFor(stateWhere((s) => s.phase === "done"));
 });
 
+test("the watchdog gives a pending mid-run re-auth the longer window", async (t) => {
+  mockEnv(t);
+  await handleMessage({ type: "sync:start", sites: ["claude.ai"] });
+  await waitFor(stateWhere((s) => s.sites[0].status === "scanning"));
+
+  // A token expiring mid-run leaves a prompt pending while plan/upload wait on
+  // the approval page: progress stalls past the site window, but the user is
+  // legitimately busy approving — the run must survive.
+  let s = await getSyncState();
+  s.auth = { userCode: "ABCD", verifyUrl: "https://x" };
+  s.lastProgressAt = Date.now() - 5 * 60_000;
+  await global.chrome.storage.session.set({ syncState: s });
+  await watchdogTick();
+  s = await getSyncState();
+  assert.equal(s.sites[0].status, "scanning");
+
+  // Past the auth window the approval is presumed abandoned.
+  s.lastProgressAt = Date.now() - 11 * 60_000;
+  await global.chrome.storage.session.set({ syncState: s });
+  await watchdogTick();
+  const done = await waitFor(stateWhere((x) => x.phase === "done"));
+  assert.equal(done.sites[0].status, "failed");
+});
+
 test("sync:start with no valid sites is rejected", async (t) => {
   mockEnv(t);
   const res = await handleMessage({ type: "sync:start", sites: ["nope.com"] });
