@@ -682,7 +682,7 @@
 
   // Written by the removed session-selection feature (shipped in v0.1.2);
   // clear it so stale exclusion lists don't linger in storage.
-  chrome.storage.local.remove("excluded");
+  chrome.storage.local.remove("excluded", () => void chrome.runtime.lastError);
 
   // Load saved config (instance) written by the settings panel.
   chrome.storage.local.get("config", (d) => {
