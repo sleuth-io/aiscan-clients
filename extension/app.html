@@ -37,27 +37,33 @@
       </section>
 
       <section>
-        <h2>Settings</h2>
-        <label class="field-label" for="instance-input">Pulse instance</label>
-        <p class="hint">
-          Where uploads go. e.g. http://dev.pulse.sleuth.io for local dev,
-          https://app.skills.new for production.
-        </p>
-        <input
-          id="instance-input"
-          type="text"
-          placeholder="https://app.skills.new"
-          spellcheck="false"
-        />
-        <div class="run-row">
-          <button id="signout-btn" class="danger">Sign out</button>
-          <span id="settings-note" class="note"></span>
+        <label class="switch">
+          <input type="checkbox" id="dev-toggle" />
+          <span class="slider"></span>
+          <span>Developer settings</span>
+        </label>
+        <div id="dev-settings" hidden>
+          <label class="field-label" for="instance-input">Pulse instance</label>
+          <p class="hint">
+            Where uploads go. e.g. http://dev.pulse.sleuth.io for local dev,
+            https://app.skills.new for production.
+          </p>
+          <input
+            id="instance-input"
+            type="text"
+            placeholder="https://app.skills.new"
+            spellcheck="false"
+          />
+          <div class="run-row">
+            <button id="signout-btn" class="danger">Sign out</button>
+            <span id="settings-note" class="note"></span>
+          </div>
+          <p class="hint">
+            Authorization happens automatically when a sync starts (an approval
+            tab opens). Sign out clears the cached token — use it after
+            switching instances.
+          </p>
         </div>
-        <p class="hint">
-          Authorization happens automatically when a sync starts (an approval
-          tab opens). Sign out clears the cached token — use it after switching
-          instances.
-        </p>
       </section>
     </main>
     <script src="app.js"></script>

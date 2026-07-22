@@ -298,8 +298,21 @@ function flashSettings(msg) {
 // ---- Init ----------------------------------------------------------------
 
 async function init() {
-  const { config } = await chrome.storage.local.get("config");
+  const { config, devSettings } = await chrome.storage.local.get([
+    "config",
+    "devSettings",
+  ]);
   if (config) cfg = Object.assign(cfg, config);
+
+  // Developer settings (instance URL, sign out) are hidden behind a toggle —
+  // ordinary users never need them; the default instance just works.
+  $("dev-toggle").checked = !!devSettings;
+  $("dev-settings").hidden = !devSettings;
+  $("dev-toggle").addEventListener("change", (e) => {
+    $("dev-settings").hidden = !e.target.checked;
+    chrome.storage.local.set({ devSettings: e.target.checked });
+  });
+
   $("instance-input").value = cfg.instanceUrl;
   $("instance-input").addEventListener("change", commitInstance);
   $("instance-input").addEventListener("keydown", (e) => {
