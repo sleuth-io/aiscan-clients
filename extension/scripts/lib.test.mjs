@@ -142,6 +142,16 @@ test('runtimeFilesFromManifest includes the app page even with no scripts', () =
   assert.deepEqual(runtimeFilesFromManifest({}), [...APP_PAGE_FILES])
 })
 
+test('runtimeFilesFromManifest collects extension + action icons, deduped', () => {
+  const files = runtimeFilesFromManifest({
+    icons: { 16: 'icon-16.png', 128: 'icon-128.png' },
+    action: { default_icon: { 16: 'icon-16.png', 32: 'icon-32.png' } },
+  })
+  assert.deepEqual(files, ['icon-16.png', 'icon-128.png', 'icon-32.png', ...APP_PAGE_FILES])
+  // The string form of default_icon is also legal manifest.
+  assert.ok(runtimeFilesFromManifest({ action: { default_icon: 'icon-48.png' } }).includes('icon-48.png'))
+})
+
 // The real manifest must carry what packaging relies on, or a release would silently misbuild.
 test('manifest.json carries the invariants packaging depends on', () => {
   const root = dirname(dirname(fileURLToPath(import.meta.url)))
