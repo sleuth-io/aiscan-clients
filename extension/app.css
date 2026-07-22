@@ -1,0 +1,248 @@
+/* The extension's tab page. Same palette as the old on-page popovers
+   (#1d1d1f surfaces, #da7756 accent) so it reads as the same product. */
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #131315;
+  color: #eaeaea;
+  font: 14px/1.5 system-ui, -apple-system, sans-serif;
+}
+
+main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 32px 20px 64px;
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+
+h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+section {
+  margin-top: 28px;
+  padding: 16px;
+  background: #1d1d1f;
+  border-radius: 10px;
+}
+
+header {
+  margin-bottom: 4px;
+}
+
+.hint {
+  margin: 2px 0 10px;
+  color: #9a9aa0;
+  font-size: 12px;
+}
+
+.note {
+  color: #9a9aa0;
+  font-size: 12px;
+}
+
+.field-label {
+  font-weight: 600;
+}
+
+/* Site checkboxes */
+.site-list {
+  list-style: none;
+  margin: 0 0 14px;
+  padding: 0;
+}
+
+.site-list li {
+  margin: 4px 0;
+}
+
+.site-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.site-list input[type="checkbox"] {
+  accent-color: #da7756;
+  width: 15px;
+  height: 15px;
+}
+
+/* Buttons */
+button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font: 13px system-ui, sans-serif;
+  color: #fff;
+  background: #3a3a3f;
+}
+
+button.primary {
+  background: #da7756;
+}
+
+button.danger {
+  background: #7a3b3b;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.run-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 4px;
+}
+
+/* Settings */
+#instance-input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #3a3a3f;
+  background: #111113;
+  color: #eaeaea;
+  font: 12px ui-monospace, Menlo, monospace;
+}
+
+/* Progress */
+.auth-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: #33291f;
+  border: 1px solid #6a5335;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.auth-note a {
+  color: #ffd9b0;
+}
+
+.progress-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.progress-list li {
+  padding: 8px 0;
+  border-top: 1px solid #2a2a2e;
+}
+
+.progress-list li:first-child {
+  border-top: none;
+}
+
+.site-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.site-row .host {
+  font-weight: 600;
+}
+
+.site-row .detail {
+  color: #9a9aa0;
+  font-size: 12px;
+}
+
+.chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.chip.pending {
+  background: #2a2a2e;
+  color: #9a9aa0;
+}
+
+.chip.waiting,
+.chip.scanning {
+  background: #4a3527;
+  color: #ffd9b0;
+}
+
+.chip.done {
+  background: #24402b;
+  color: #7fd18a;
+}
+
+.chip.failed {
+  background: #452626;
+  color: #e8a1a1;
+}
+
+.chip.skipped {
+  background: #2a2a2e;
+  color: #6f6f76;
+}
+
+details.log {
+  margin-top: 6px;
+}
+
+details.log summary {
+  color: #9a9aa0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+details.log pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  max-height: 220px;
+  overflow: auto;
+  background: #111113;
+  border-radius: 6px;
+  font: 11px ui-monospace, Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+.result-links {
+  margin-top: 12px;
+}
+
+.result-links a.reports {
+  display: inline-block;
+  color: #ffd9b0;
+  font-weight: 600;
+}
+
+.result-links a.force {
+  display: block;
+  margin-top: 10px;
+  color: #b9b9b9;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.result-links .error {
+  color: #e8a1a1;
+}

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sleuth AI Insights</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Sleuth AI Insights</h1>
+        <p class="hint">
+          Syncs your AI chats to aiscan — uploads only what the server still
+          needs.
+        </p>
+      </header>
+
+      <section>
+        <h2>Websites to scan</h2>
+        <p class="hint" id="sites-hint">
+          Sites you've visited in the last 90 days are checked by default.
+        </p>
+        <ul id="site-list" class="site-list"></ul>
+        <div class="run-row">
+          <button id="sync-btn" class="primary">Sync now</button>
+          <button id="cancel-btn" class="danger" hidden>Cancel</button>
+          <span id="run-note" class="note"></span>
+        </div>
+      </section>
+
+      <section id="progress-section" hidden>
+        <h2>Progress</h2>
+        <div id="auth-note" class="auth-note" hidden></div>
+        <ul id="progress-list" class="progress-list"></ul>
+        <div id="result-links" class="result-links"></div>
+      </section>
+
+      <section>
+        <h2>Settings</h2>
+        <label class="field-label" for="instance-input">Pulse instance</label>
+        <p class="hint">
+          Where uploads go. e.g. http://dev.pulse.sleuth.io for local dev,
+          https://app.skills.new for production.
+        </p>
+        <input
+          id="instance-input"
+          type="text"
+          placeholder="https://app.skills.new"
+          spellcheck="false"
+        />
+        <div class="run-row">
+          <button id="signout-btn" class="danger">Sign out</button>
+          <span id="settings-note" class="note"></span>
+        </div>
+        <p class="hint">
+          Authorization happens automatically when a sync starts (an approval
+          tab opens). Sign out clears the cached token — use it after switching
+          instances.
+        </p>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -24,8 +24,8 @@ See [`docs/transparency.md`](docs/transparency.md).
   anything is uploaded.
 - **Store nothing raw.** The server analyzes uploads in memory and persists only comfort-safe
   output. The client surfaces what was sent.
-- **Legible.** The desktop tray (and the extension popup) always show status and what was last
-  uploaded.
+- **Legible.** The desktop tray (and the extension's own page) always show status and what was
+  last uploaded.
 
 ## Usage
 
@@ -80,13 +80,13 @@ No build step — it's plain Manifest V3 JavaScript. Load it unpacked:
 
 Then:
 
-1. Make sure you're **logged in** to claude.ai / chatgpt.com in the same browser.
-2. **Refresh** the tab (content scripts inject on load).
-3. Click the on-page **⚙** (bottom-right) to set the instance URL if it isn't
-   `https://app.skills.new`. A different instance must also be added to the manifest's
-   `host_permissions`.
-4. Click the orange **"aiscan: scan N"** button → approve the one-time OAuth tab → the panel
-   links you to the report.
+1. Make sure you're **logged in** to claude.ai / chatgpt.com / Gemini in the same browser.
+2. Click the **toolbar icon** — the extension's page opens in a tab. Sites you've visited
+   recently are pre-checked; set the instance URL under **Settings** if it isn't
+   `https://app.skills.new` (a different instance must also be added to the manifest's
+   `host_permissions`).
+3. Click **Sync now** → approve the one-time OAuth tab → the extension opens each checked
+   site in a background tab, uploads, closes it, and links you to the report when done.
 
 See [`extension/SPIKE.md`](extension/SPIKE.md) for the capture details.
 
