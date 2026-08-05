@@ -25,6 +25,10 @@ key-shaped strings, and (configurably) file contents — before upload.
 - The redacted capture is sent to the aiscan server, which parses and analyzes it.
 - Uploading content to a server for AI analysis is inherent to this kind of product (any AI
   analysis sends content to a model). The guarantee that matters is what is **kept**.
+- The browser extension re-syncs automatically about once a week: when the last successful
+  sync is more than a week old, it opens its own page in a background tab, runs the same sync
+  you would start by hand, and closes the tab if everything succeeded. Every sync — manual or
+  automatic — runs through that visible page; the extension never uploads without it.
 
 ## What is stored
 

@@ -20,6 +20,7 @@ const {
   handleMessage,
   getSyncState,
   watchdogTick,
+  autoSyncTick,
 } = require("./background.js");
 
 const td = new TextDecoder();
@@ -47,11 +48,19 @@ function mockEnv(t, { instanceUrl = "https://app.skills.new", respond } = {}) {
     },
   };
   const session = {};
-  const tabCalls = { created: [], removed: [], messages: [] };
+  // `openTabs` is what tabs.query answers with — tests push into it to
+  // simulate an already-open extension page.
+  const tabCalls = {
+    created: [],
+    removed: [],
+    messages: [],
+    updated: [],
+    openTabs: [],
+  };
   let nextTabId = 100;
   const cap = {};
   global.chrome = {
-    runtime: {},
+    runtime: { getURL: (p) => "chrome-extension://aiscan/" + p },
     storage: {
       local: {
         get: async (key) =>
@@ -72,6 +81,8 @@ function mockEnv(t, { instanceUrl = "https://app.skills.new", respond } = {}) {
         return { id: ++nextTabId };
       },
       remove: async (id) => void tabCalls.removed.push(id),
+      query: async () => tabCalls.openTabs,
+      update: async (id, opts) => void tabCalls.updated.push({ id, opts }),
       sendMessage: async (id, m) => {
         tabCalls.messages.push({ id, m });
         if (m.type === "ping") return { ready: true };
@@ -79,6 +90,7 @@ function mockEnv(t, { instanceUrl = "https://app.skills.new", respond } = {}) {
       },
     },
     alarms: { create: async () => {}, clear: async () => {} },
+    windows: { update: async () => ({}) },
   };
   global.fetch = async (url, opts) => {
     cap.url = url;
@@ -571,4 +583,158 @@ test("sync:start with no valid sites is rejected", async (t) => {
   mockEnv(t);
   const res = await handleMessage({ type: "sync:start", sites: ["nope.com"] });
   assert.deepEqual(res, { ok: false, error: "no sites selected" });
+});
+
+// ---------------------------------------------------------------------------
+// weekly auto-sync: a completed run stamps lastSyncedAt; the staleness alarm
+// opens the extension page with ?auto=1 once the stamp is over a week old, and
+// the page does the rest (auto-start, auto-close).
+// ---------------------------------------------------------------------------
+
+test("a run with a completed site stamps lastSyncedAt", async (t) => {
+  const { store } = mockEnv(t);
+  const res = await handleMessage({ type: "sync:start", sites: ["claude.ai"] });
+  const scanning = await waitFor(
+    stateWhere((s) => s.sites[0].status === "scanning"),
+  );
+  await handleMessage(
+    { type: "scan:done", syncId: res.syncId, ok: true, synced: 1 },
+    { tab: { id: scanning.sites[0].tabId } },
+  );
+  // The stamp lands right after the phase flips to done.
+  const stamped = await waitFor(() => store.lastSyncedAt);
+  assert.ok(Date.now() - stamped < 5000);
+});
+
+test("an all-failed run leaves lastSyncedAt unset so auto-sync retries", async (t) => {
+  const { store } = mockEnv(t);
+  const res = await handleMessage({ type: "sync:start", sites: ["claude.ai"] });
+  const scanning = await waitFor(
+    stateWhere((s) => s.sites[0].status === "scanning"),
+  );
+  await handleMessage(
+    { type: "scan:done", syncId: res.syncId, ok: false, error: "not signed in" },
+    { tab: { id: scanning.sites[0].tabId } },
+  );
+  await waitFor(stateWhere((s) => s.phase === "done"));
+  await new Promise((r) => setTimeout(r, 50)); // room for a (wrong) stamp write
+  assert.equal(store.lastSyncedAt, undefined);
+});
+
+test("autoSyncTick seeds the clock on first run instead of opening a tab", async (t) => {
+  const { store, tabCalls } = mockEnv(t);
+  await autoSyncTick();
+  assert.ok(store.lastSyncedAt > 0);
+  assert.equal(tabCalls.created.length, 0);
+});
+
+test("autoSyncTick opens the page for a stale user — inactive, flagged auto", async (t) => {
+  const { store, tabCalls } = mockEnv(t);
+  store.lastSyncedAt = Date.now() - 8 * 24 * 60 * 60_000;
+  await autoSyncTick();
+  assert.deepEqual(tabCalls.created, [
+    { url: "chrome-extension://aiscan/app.html?auto=1", active: false },
+  ]);
+});
+
+test("autoSyncTick does nothing while coverage is fresh", async (t) => {
+  const { store, tabCalls } = mockEnv(t);
+  store.lastSyncedAt = Date.now() - 24 * 60 * 60_000;
+  await autoSyncTick();
+  assert.equal(tabCalls.created.length, 0);
+});
+
+test("autoSyncTick stays out of the way of a live run", async (t) => {
+  const { store, tabCalls } = mockEnv(t);
+  store.lastSyncedAt = Date.now() - 8 * 24 * 60 * 60_000;
+  await global.chrome.storage.session.set({
+    syncState: { phase: "running", lastProgressAt: Date.now() },
+  });
+  await autoSyncTick();
+  assert.equal(tabCalls.created.length, 0);
+});
+
+test("autoSyncTick does not stack a second page onto an open one", async (t) => {
+  const { store, tabCalls } = mockEnv(t);
+  store.lastSyncedAt = Date.now() - 8 * 24 * 60 * 60_000;
+  tabCalls.openTabs.push({ id: 5 });
+  await autoSyncTick();
+  assert.equal(tabCalls.created.length, 0);
+});
+
+test("test mode shrinks the staleness window to a minute", async (t) => {
+  const { store, tabCalls } = mockEnv(t);
+  store.autoSyncTest = true;
+  store.lastSyncedAt = Date.now() - 90_000;
+  await autoSyncTick();
+  assert.equal(tabCalls.created.length, 1);
+});
+
+// A fetch responder that walks the device-code flow instantly: authorization
+// hands back a sub-second poll interval, and the first token poll succeeds.
+const deviceFlowRespond = async (url) => {
+  if (url.includes("/api/oauth/device-authorization/"))
+    return {
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          device_code: "dc",
+          verification_uri_complete: "https://verify.example/approve",
+          interval: 0.001,
+          expires_in: 60,
+        }),
+    };
+  if (url.includes("/api/oauth/token/"))
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: "tok2", expires_in: 3600 }),
+    };
+  return { ok: true, status: 200, text: async () => "{}" };
+};
+
+test("an auto-run needing auth surfaces the app page, not the approval tab", async (t) => {
+  const { store, tabCalls } = mockEnv(t, { respond: deviceFlowRespond });
+  delete store.auth; // expired-token weekly reality: the device flow must run
+  tabCalls.openTabs.push({ id: 7, windowId: 1 }); // the ?auto=1 page itself
+
+  const res = await handleMessage({
+    type: "sync:start",
+    sites: ["claude.ai"],
+    auto: true,
+  });
+  assert.equal(res.ok, true);
+  const scanning = await waitFor(
+    stateWhere((s) => s.sites[0].status === "scanning"),
+  );
+  assert.equal(scanning.auto, true);
+
+  // The approval page never opened on its own; the app page was focused so
+  // the explanation (with its approval link) is what the user sees.
+  assert.ok(!tabCalls.created.some((c) => c.url.includes("verify.example")));
+  assert.ok(tabCalls.updated.some((u) => u.id === 7 && u.opts.active === true));
+
+  await handleMessage(
+    { type: "scan:done", syncId: res.syncId, ok: true, synced: 1 },
+    { tab: { id: scanning.sites[0].tabId } },
+  );
+  await waitFor(stateWhere((s) => s.phase === "done"));
+});
+
+test("a user-started run still opens the approval tab directly", async (t) => {
+  const { store, tabCalls } = mockEnv(t, { respond: deviceFlowRespond });
+  delete store.auth;
+
+  const res = await handleMessage({ type: "sync:start", sites: ["claude.ai"] });
+  const scanning = await waitFor(
+    stateWhere((s) => s.sites[0].status === "scanning"),
+  );
+  assert.ok(tabCalls.created.some((c) => c.url === "https://verify.example/approve"));
+
+  await handleMessage(
+    { type: "scan:done", syncId: res.syncId, ok: true, synced: 1 },
+    { tab: { id: scanning.sites[0].tabId } },
+  );
+  await waitFor(stateWhere((s) => s.phase === "done"));
 });

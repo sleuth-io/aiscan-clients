@@ -17,6 +17,14 @@ server. One codebase builds for Chrome and Firefox (Manifest V3).
   is the whole UI: pick which sites to scan (defaulted from your recent browser history),
   start a sync, and watch per-site progress. The sync opens each site in a background tab,
   captures, and closes it. Config + the auth token live in `chrome.storage`.
+- **Weekly auto-sync, through the same page.** A background alarm checks staleness; once the
+  last successful sync is over a week old it opens `app.html?auto=1` in a background tab. The
+  page auto-starts the sync and closes itself only if every site succeeded and nobody ever
+  looked at the tab; a failure surfaces the tab instead of leaving it parked invisibly. An
+  auto-run never pops the OAuth approval tab unbidden — when authorization is needed it
+  focuses the extension page, which explains the ask and links to the approval. Dev settings
+  has a test mode that runs the loop at ~1 minute for watching it live (cleared automatically
+  on any extension update/reload).
 
 ## Layout (to be built)
 
