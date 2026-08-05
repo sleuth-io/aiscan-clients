@@ -158,8 +158,12 @@ async function cancelSync() {
 // run, an older run's leftover state) never auto-closes the tab.
 let autoRunSyncId = null;
 let autoCloseTimer = null;
+// Sticky: once the user has seen or touched the page, nothing re-arms the
+// auto-close — not even the arming that follows startSync's round-trip.
+let userTookOver = false;
 
 function disarmAutoClose() {
+  userTookOver = true;
   autoRunSyncId = null;
   if (autoCloseTimer) {
     clearTimeout(autoCloseTimer);
@@ -175,7 +179,8 @@ async function surfaceTab() {
   const tab = await chrome.tabs.getCurrent();
   if (!tab || tab.id == null) return;
   await chrome.tabs.update(tab.id, { active: true });
-  if (tab.windowId != null) chrome.windows.update(tab.windowId, { focused: true });
+  if (tab.windowId != null)
+    await chrome.windows.update(tab.windowId, { focused: true });
 }
 
 function maybeAutoClose(state) {
@@ -187,15 +192,19 @@ function maybeAutoClose(state) {
     // Errors, cancels, and partial failures leave the tab up for the user —
     // surfaced, so they know it's there.
     disarmAutoClose();
-    surfaceTab();
+    surfaceTab().catch(() => {});
     return;
   }
   if (autoCloseTimer) return;
   // Leave the finished run on screen for a beat before the tab vanishes.
   autoCloseTimer = setTimeout(async () => {
-    const tab = await chrome.tabs.getCurrent();
-    if (tab && tab.id != null) chrome.tabs.remove(tab.id);
-    else window.close();
+    try {
+      const tab = await chrome.tabs.getCurrent();
+      if (tab && tab.id != null) await chrome.tabs.remove(tab.id);
+      else window.close();
+    } catch (_) {
+      window.close();
+    }
   }, 1500);
 }
 
@@ -425,7 +434,18 @@ async function init() {
       if (document.visibilityState === "visible") disarmAutoClose();
     });
     const resp = await startSync(false, true);
-    if (resp && resp.ok) autoRunSyncId = resp.syncId;
+    if (resp && resp.ok) {
+      // The user may have seen or touched the page during the start
+      // round-trip; a tab they've looked at never closes itself.
+      if (!userTookOver && document.visibilityState !== "visible")
+        autoRunSyncId = resp.syncId;
+    } else {
+      // A start that never became a run (no sites selected, already-running
+      // race, worker unreachable) can't reach maybeAutoClose's failure path —
+      // surface the tab so the run-note explaining it is seen, instead of
+      // parking invisibly and blocking every future auto-open.
+      surfaceTab().catch(() => {});
+    }
   }
 }
 
