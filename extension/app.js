@@ -120,15 +120,20 @@ function renderSiteList(running) {
 
 // ---- Run control ---------------------------------------------------------
 
-async function startSync(force) {
+async function startSync(force, auto) {
   const hosts = SITES.map((s) => s.host).filter((h) => selection[h]);
   $("run-note").textContent = "";
   if (!hosts.length) {
     $("run-note").textContent = "Select at least one website.";
-    return;
+    return null;
   }
   const resp = await chrome.runtime
-    .sendMessage({ type: "sync:start", sites: hosts, force: !!force })
+    .sendMessage({
+      type: "sync:start",
+      sites: hosts,
+      force: !!force,
+      auto: !!auto,
+    })
     .catch(() => null);
   if (!resp || !resp.ok) {
     $("run-note").textContent =
@@ -137,10 +142,61 @@ async function startSync(force) {
         : "Could not start: " + ((resp && resp.error) || "no response");
   }
   // The run itself is rendered from storage as the background updates it.
+  return resp;
 }
 
 async function cancelSync() {
   await chrome.runtime.sendMessage({ type: "sync:cancel" }).catch(() => null);
+}
+
+// ---- Auto-run ------------------------------------------------------------
+
+// The background's weekly staleness alarm opens this page with ?auto=1; the
+// page then starts the sync itself and — if the run it started finishes with
+// every site done and the user never touched the page — closes itself again.
+// autoRunSyncId is the run this page auto-started; anything else (a manual
+// run, an older run's leftover state) never auto-closes the tab.
+let autoRunSyncId = null;
+let autoCloseTimer = null;
+
+function disarmAutoClose() {
+  autoRunSyncId = null;
+  if (autoCloseTimer) {
+    clearTimeout(autoCloseTimer);
+    autoCloseTimer = null;
+  }
+}
+
+// A failed auto-run parked in an inactive tab is invisible — and while an
+// app.html tab exists, the staleness alarm won't open another. Bring the tab
+// forward so the failure is seen and dealt with instead of silently halting
+// auto-sync until the tab is found.
+async function surfaceTab() {
+  const tab = await chrome.tabs.getCurrent();
+  if (!tab || tab.id == null) return;
+  await chrome.tabs.update(tab.id, { active: true });
+  if (tab.windowId != null) chrome.windows.update(tab.windowId, { focused: true });
+}
+
+function maybeAutoClose(state) {
+  if (!autoRunSyncId || !state || state.syncId !== autoRunSyncId) return;
+  if (state.phase === "authorizing" || state.phase === "running") return;
+  const fullSuccess =
+    state.phase === "done" && state.sites.every((s) => s.status === "done");
+  if (!fullSuccess) {
+    // Errors, cancels, and partial failures leave the tab up for the user —
+    // surfaced, so they know it's there.
+    disarmAutoClose();
+    surfaceTab();
+    return;
+  }
+  if (autoCloseTimer) return;
+  // Leave the finished run on screen for a beat before the tab vanishes.
+  autoCloseTimer = setTimeout(async () => {
+    const tab = await chrome.tabs.getCurrent();
+    if (tab && tab.id != null) chrome.tabs.remove(tab.id);
+    else window.close();
+  }, 1500);
 }
 
 // ---- Rendering -----------------------------------------------------------
@@ -163,7 +219,11 @@ function renderProgress(state) {
     authNote.hidden = false;
     authNote.appendChild(
       document.createTextNode(
-        'Authorizing — click "Authorize" in the opened tab. ',
+        // An auto-started run never opens the approval tab itself — this page
+        // is surfaced instead, and the link below is the way in.
+        state.auto
+          ? "Authorization needed to sync. "
+          : 'Authorizing — click "Authorize" in the opened tab. ',
       ),
     );
     if (state.auth && state.auth.verifyUrl)
@@ -263,6 +323,7 @@ function render(state) {
   $("cancel-btn").hidden = !running;
   renderSiteList(running);
   renderProgress(state);
+  maybeAutoClose(state);
 }
 
 // ---- Settings ------------------------------------------------------------
@@ -301,9 +362,10 @@ function flashSettings(msg) {
 // ---- Init ----------------------------------------------------------------
 
 async function init() {
-  const { config, devSettings } = await chrome.storage.local.get([
+  const { config, devSettings, autoSyncTest } = await chrome.storage.local.get([
     "config",
     "devSettings",
+    "autoSyncTest",
   ]);
   if (config) cfg = Object.assign(cfg, config);
 
@@ -324,6 +386,16 @@ async function init() {
   $("signout-btn").addEventListener("click", () => {
     chrome.storage.local.remove("auth", () => flashSettings("Signed out."));
   });
+  // Auto-sync test mode: run the weekly staleness loop at ~1 minute instead,
+  // so the auto-open → sync → auto-close cycle can be watched live. The
+  // background re-creates its alarm with the matching cadence on toggle.
+  $("autosync-test-toggle").checked = !!autoSyncTest;
+  $("autosync-test-toggle").addEventListener("change", async (e) => {
+    await chrome.storage.local.set({ autoSyncTest: e.target.checked });
+    chrome.runtime
+      .sendMessage({ type: "autosync:reschedule" })
+      .catch(() => null);
+  });
   $("sync-btn").addEventListener("click", () => startSync(false));
   $("cancel-btn").addEventListener("click", cancelSync);
 
@@ -337,6 +409,24 @@ async function init() {
   });
   const { syncState } = await chrome.storage.session.get("syncState");
   render(syncState || null);
+
+  // Opened by the auto-sync alarm: start the run without the extra click. Any
+  // interaction with the page means the user took over — keep the tab.
+  if (new URLSearchParams(location.search).get("auto") === "1") {
+    // Strip the flag so reloading this tab later doesn't re-trigger a run.
+    history.replaceState(null, "", location.pathname);
+    document.addEventListener("pointerdown", disarmAutoClose);
+    document.addEventListener("keydown", disarmAutoClose);
+    // The tab becoming visible — toolbar click, or the background surfacing
+    // it for an auth approval — means the user saw the page; closing it under
+    // them then would be worse than leaving it up. The tab only closes itself
+    // if nobody ever looked at it.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") disarmAutoClose();
+    });
+    const resp = await startSync(false, true);
+    if (resp && resp.ok) autoRunSyncId = resp.syncId;
+  }
 }
 
 init();

@@ -184,7 +184,7 @@ async function pollForToken(
   );
 }
 
-async function ensureToken(instanceUrl, onPrompt) {
+async function ensureToken(instanceUrl, onPrompt, interactive = true) {
   const cached = await getCachedToken(instanceUrl);
   if (cached) return cached;
 
@@ -203,9 +203,13 @@ async function ensureToken(instanceUrl, onPrompt) {
         encodeURIComponent(auth.user_code);
     }
   }
-  // Open the approval page; hand the prompt (code + link) to the caller so the
-  // tab page can render it as a fallback in case the opened tab gets lost.
-  if (verifyUrl) chrome.tabs.create({ url: verifyUrl });
+  // Interactive (user-started) runs open the approval page directly; the
+  // prompt (code + link) also goes to the caller so the tab page can render it
+  // as a fallback in case the opened tab gets lost. An auto-started run must
+  // never pop an approval out of nowhere — it surfaces the extension's own
+  // page instead, which explains the ask and links to the approval.
+  if (verifyUrl && interactive) chrome.tabs.create({ url: verifyUrl });
+  if (!interactive) openOrFocusAppPage().catch(() => {});
   if (onPrompt) {
     try {
       onPrompt({ userCode: auth.user_code || null, verifyUrl: verifyUrl || null });
@@ -281,7 +285,7 @@ async function plan(msg) {
   // The token is pre-warmed when a sync starts; this only re-authorizes if it
   // expired mid-run, in which case the prompt goes into the run state so the
   // tab page can show it.
-  const token = await ensureToken(instanceUrl, syncAuthPrompt);
+  const token = await ensureRunToken(instanceUrl);
 
   const res = await fetch(instanceUrl + "/graphql", {
     method: "POST",
@@ -362,7 +366,7 @@ async function upload(msg) {
     ? await gzip(buildTar(files, mtime))
     : new Uint8Array(0);
 
-  const token = await ensureToken(instanceUrl, syncAuthPrompt);
+  const token = await ensureRunToken(instanceUrl);
   const url =
     instanceUrl +
     "/api/aiscan/ingest?source=" +
@@ -429,6 +433,7 @@ const SITES = {
 };
 
 const WATCHDOG_ALARM = "aiscan-watchdog";
+const AUTO_SYNC_ALARM = "aiscan-autosync";
 const SITE_STALL_MS = 3 * 60_000; // no progress from the current site → fail it
 const AUTH_STALL_MS = 10 * 60_000; // approval never came → fail the run
 const PING_INTERVAL_MS = 500;
@@ -480,7 +485,15 @@ function syncAuthPrompt(prompt) {
   });
 }
 
-async function startSync(hosts, force) {
+// Run-scoped auth: prompts land in the run state for the tab page to render,
+// and an auto-started run is non-interactive — its approval page is never
+// opened unbidden (ensureToken surfaces the app page instead).
+async function ensureRunToken(instanceUrl) {
+  const state = await getSyncState();
+  return ensureToken(instanceUrl, syncAuthPrompt, !(state && state.auto));
+}
+
+async function startSync(hosts, force, auto) {
   const existing = await getSyncState();
   if (!canStartSync(existing, Date.now()))
     return { ok: false, error: "already-running" };
@@ -502,6 +515,7 @@ async function startSync(hosts, force) {
       phase: "authorizing",
       auth: null,
       force: !!force,
+      auto: !!auto,
       error: null,
       reportsUrl: instanceUrl + "/aiscan",
       currentIndex: -1,
@@ -528,7 +542,7 @@ async function startSync(hosts, force) {
 // throughout (each fetch resets the MV3 idle timer).
 async function authorizeThenRun(syncId, instanceUrl) {
   try {
-    await ensureToken(instanceUrl, syncAuthPrompt);
+    await ensureRunToken(instanceUrl);
   } catch (e) {
     await updateSyncState((s) => {
       if (s.syncId !== syncId || s.phase !== "authorizing") return false;
@@ -567,6 +581,11 @@ async function advance(syncId) {
   if (!state) return;
   if (state.phase === "done") {
     await chrome.alarms.clear(WATCHDOG_ALARM);
+    // Any site completing refreshed this user's coverage — stamp it so the
+    // weekly staleness check knows. All-failed runs don't count: leaving the
+    // stamp stale makes the auto-sync retry on its next check.
+    if (state.sites.some((x) => x.status === "done"))
+      await chrome.storage.local.set({ lastSyncedAt: Date.now() });
     return;
   }
   openAndScan(
@@ -761,6 +780,81 @@ async function watchdogTick() {
   }
 }
 
+// Focus the extension's own tab page if one is open, otherwise open one. Used
+// by the toolbar icon, and by auto-run auth to surface the page that explains
+// the approval instead of popping the approval itself.
+async function openOrFocusAppPage() {
+  const url = chrome.runtime.getURL("app.html");
+  // The trailing * also matches a ?auto=1 tab the auto-sync opened — focus
+  // that one rather than opening a duplicate next to it.
+  const tabs = await chrome.tabs.query({ url: url + "*" });
+  // Some matched tabs (e.g. devtools) can lack a usable id; fall through to
+  // opening a fresh tab rather than throwing on an undefined id.
+  const tab = tabs.find((t) => t && t.id != null);
+  if (tab) {
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId != null)
+      await chrome.windows.update(tab.windowId, { focused: true });
+  } else {
+    await chrome.tabs.create({ url });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Weekly auto-sync — a periodic staleness check. When the last successful sync
+// is more than a week old, open the extension's own tab page with ?auto=1: the
+// page starts the sync itself and closes itself again if the run fully
+// succeeds, so the steady state is "a tab appears once a week, syncs, and
+// vanishes". Everything visible happens in that page — this worker never
+// starts a run on its own, so an auth approval can never pop up unexplained.
+// ---------------------------------------------------------------------------
+
+const AUTO_SYNC_STALE_MS = 7 * 24 * 60 * 60_000;
+const AUTO_SYNC_PERIOD_MIN = 6 * 60; // staleness check cadence, not sync cadence
+
+// Test mode (dev settings) shrinks the weekly cadence to about a minute so the
+// whole loop — tab opens, syncs, closes — can be watched live instead of
+// waited on for a week.
+async function getAutoSyncTuning() {
+  const { autoSyncTest } = await chrome.storage.local.get("autoSyncTest");
+  return autoSyncTest
+    ? { periodInMinutes: 1, staleMs: 60_000 }
+    : { periodInMinutes: AUTO_SYNC_PERIOD_MIN, staleMs: AUTO_SYNC_STALE_MS };
+}
+
+// (Re)creating the alarm under the same name just resets its clock, so this is
+// safe to call from every startup and from the test-mode toggle.
+async function scheduleAutoSync() {
+  const { periodInMinutes } = await getAutoSyncTuning();
+  await chrome.alarms.create(AUTO_SYNC_ALARM, {
+    delayInMinutes: 1,
+    periodInMinutes,
+  });
+  return { ok: true };
+}
+
+async function autoSyncTick() {
+  const { staleMs } = await getAutoSyncTuning();
+  const { lastSyncedAt } = await chrome.storage.local.get("lastSyncedAt");
+  if (!lastSyncedAt) {
+    // Nothing recorded yet (fresh install, or first build carrying this
+    // feature): anchor the clock now instead of opening a tab immediately.
+    await chrome.storage.local.set({ lastSyncedAt: Date.now() });
+    return;
+  }
+  if (Date.now() - lastSyncedAt < staleMs) return;
+
+  const state = await getSyncState();
+  if (state && (state.phase === "authorizing" || state.phase === "running"))
+    return;
+  // If the page is already open — the user is looking at it, or a previous
+  // auto-run ended in an error that was left on screen — don't stack another.
+  const url = chrome.runtime.getURL("app.html");
+  const open = await chrome.tabs.query({ url: url + "*" });
+  if (open.length) return;
+  await chrome.tabs.create({ url: url + "?auto=1", active: false });
+}
+
 // One dispatcher for every message the worker answers, so the Node tests can
 // drive the whole orchestration without a chrome.runtime listener.
 const MESSAGE_TYPES = new Set([
@@ -770,16 +864,19 @@ const MESSAGE_TYPES = new Set([
   "sync:cancel",
   "scan:progress",
   "scan:done",
+  "autosync:reschedule",
 ]);
 
 function handleMessage(msg, sender) {
   switch (msg.type) {
+    case "autosync:reschedule":
+      return scheduleAutoSync();
     case "plan":
       return plan(msg);
     case "upload":
       return upload(msg);
     case "sync:start":
-      return startSync(msg.sites, msg.force);
+      return startSync(msg.sites, msg.force, msg.auto);
     case "sync:cancel":
       return cancelSync();
     case "scan:progress":
@@ -796,19 +893,8 @@ if (typeof chrome !== "undefined" && chrome.runtime) {
   // Toolbar icon → the extension's own tab page (app.html): focus it if one is
   // already open, otherwise open it. (No default_popup in the manifest, so the
   // click reaches this listener.)
-  chrome.action.onClicked.addListener(async () => {
-    const url = chrome.runtime.getURL("app.html");
-    const tabs = await chrome.tabs.query({ url });
-    // Some matched tabs (e.g. devtools) can lack a usable id; fall through to
-    // opening a fresh tab rather than throwing on an undefined id.
-    const tab = tabs.find((t) => t && t.id != null);
-    if (tab) {
-      await chrome.tabs.update(tab.id, { active: true });
-      if (tab.windowId != null)
-        await chrome.windows.update(tab.windowId, { focused: true });
-    } else {
-      await chrome.tabs.create({ url });
-    }
+  chrome.action.onClicked.addListener(() => {
+    openOrFocusAppPage();
   });
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -840,6 +926,19 @@ if (typeof chrome !== "undefined" && chrome.runtime) {
 
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === WATCHDOG_ALARM) watchdogTick();
+    if (alarm.name === AUTO_SYNC_ALARM) autoSyncTick();
+  });
+
+  // Both fire scheduleAutoSync so the staleness alarm exists from install
+  // onward and gets its clock reset on every browser start.
+  chrome.runtime.onInstalled.addListener(async () => {
+    // Test mode must not survive an update or reload — left behind, it would
+    // keep running the full sync loop every minute indefinitely.
+    await chrome.storage.local.remove("autoSyncTest");
+    scheduleAutoSync();
+  });
+  chrome.runtime.onStartup.addListener(() => {
+    scheduleAutoSync();
   });
 }
 
@@ -860,5 +959,7 @@ if (typeof module !== "undefined" && module.exports) {
     handleMessage,
     getSyncState,
     watchdogTick,
+    autoSyncTick,
+    scheduleAutoSync,
   };
 }
