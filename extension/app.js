@@ -300,7 +300,7 @@ function renderProgress(state) {
         href: state.reportsUrl,
         target: "_blank",
         rel: "noopener",
-        text: "Open reports",
+        text: "Show my synced sessions",
       }),
     );
     const total = state.sites.reduce((n, s) => n + (s.synced || 0), 0);
