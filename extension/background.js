@@ -29,6 +29,8 @@ const DEVICE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
 // both the sync-plan query and the ingest upload so the server pairs a plan with
 // the evidence it later receives.
 const SCHEMA_VERSION = 1;
+// Where the "Show my synced sessions" link in the tab page lands.
+const reportsUrl = (instanceUrl) => instanceUrl + "/aiscan/episodes?focus=me";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -321,7 +323,7 @@ async function plan(msg) {
   return {
     ok: true,
     neededSpans: (data && data.neededSpans) || [],
-    reportsUrl: instanceUrl + "/aiscan",
+    reportsUrl: reportsUrl(instanceUrl),
   };
 }
 
@@ -399,7 +401,8 @@ async function upload(msg) {
   if (!res.ok) throw new Error("ingest " + res.status + ": " + text);
 
   // The response acknowledges the deposited evidence; there is no per-upload
-  // report to link to — reports live at the instance's /aiscan index.
+  // report to link to — the user's synced sessions live at the instance's
+  // /aiscan/episodes list.
   let evidence = "";
   try {
     evidence = JSON.parse(text).evidence || "";
@@ -408,7 +411,7 @@ async function upload(msg) {
     ok: true,
     sessions: files.length,
     evidence,
-    reportsUrl: instanceUrl + "/aiscan",
+    reportsUrl: reportsUrl(instanceUrl),
   };
 }
 
@@ -517,7 +520,7 @@ async function startSync(hosts, force, auto) {
       force: !!force,
       auto: !!auto,
       error: null,
-      reportsUrl: instanceUrl + "/aiscan",
+      reportsUrl: reportsUrl(instanceUrl),
       currentIndex: -1,
       sites: selected.map((host) => ({
         host,

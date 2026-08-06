@@ -207,7 +207,7 @@ test("upload files claude.ai conversations as raw JSON under claude-web/", async
     ok: true,
     sessions: 1,
     evidence: "AR_1",
-    reportsUrl: instanceUrl + "/aiscan",
+    reportsUrl: instanceUrl + "/aiscan/episodes?focus=me",
   });
   assert.ok(cap.url.includes("source=claude-web"));
   // Span-based ingest contract: the upload is tagged with the span it fulfills,
@@ -347,7 +347,7 @@ test("plan requests needed spans for the provider's source", async (t) => {
   assert.equal(reqBody.variables.source, "claude-web");
   assert.equal(reqBody.variables.schemaVersion, 1);
   assert.deepEqual(reqBody.variables.available, available);
-  assert.equal(res.reportsUrl, instanceUrl + "/aiscan");
+  assert.equal(res.reportsUrl, instanceUrl + "/aiscan/episodes?focus=me");
   assert.equal(res.neededSpans.length, 1);
   assert.equal(res.neededSpans[0].start, "2026-06-10T00:00:00Z");
 });
