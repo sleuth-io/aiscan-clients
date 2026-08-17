@@ -836,16 +836,33 @@ async function scheduleAutoSync() {
   return { ok: true };
 }
 
+// Milliseconds since a stored stamp, treating a future-dated stamp (the clock
+// jumped backwards since it was written) as infinitely old — otherwise such a
+// stamp suppresses the staleness check until the clock catches back up past
+// it, and the fresh stamp written by the next successful open self-heals it.
+function sinceStamp(ts) {
+  const d = Date.now() - ts;
+  return d < 0 ? Infinity : d;
+}
+
 async function autoSyncTick() {
   const { staleMs } = await getAutoSyncTuning();
-  const { lastSyncedAt } = await chrome.storage.local.get("lastSyncedAt");
+  const { lastSyncedAt, lastAutoOpenAt } = await chrome.storage.local.get([
+    "lastSyncedAt",
+    "lastAutoOpenAt",
+  ]);
   if (!lastSyncedAt) {
     // Nothing recorded yet (fresh install, or first build carrying this
     // feature): anchor the clock now instead of opening a tab immediately.
     await chrome.storage.local.set({ lastSyncedAt: Date.now() });
     return;
   }
-  if (Date.now() - lastSyncedAt < staleMs) return;
+  if (sinceStamp(lastSyncedAt) < staleMs) return;
+  // An attempt counts even if it was cancelled or abandoned: at most one
+  // auto-open per staleness window. Without this, a user who closes the tab
+  // without finishing gets it popped at them again on every check until a
+  // sync finally succeeds — weekly nudges, not daily nagging.
+  if (lastAutoOpenAt && sinceStamp(lastAutoOpenAt) < staleMs) return;
 
   const state = await getSyncState();
   if (state && (state.phase === "authorizing" || state.phase === "running"))
@@ -855,7 +872,11 @@ async function autoSyncTick() {
   const url = chrome.runtime.getURL("app.html");
   const open = await chrome.tabs.query({ url: url + "*" });
   if (open.length) return;
+  // Stamp only after the tab actually exists: a failed create (e.g. no normal
+  // browser window open when the alarm fires) must retry on the next check,
+  // not silently consume the weekly window with nothing shown to the user.
   await chrome.tabs.create({ url: url + "?auto=1", active: false });
+  await chrome.storage.local.set({ lastAutoOpenAt: Date.now() });
 }
 
 // One dispatcher for every message the worker answers, so the Node tests can
@@ -929,7 +950,10 @@ if (typeof chrome !== "undefined" && chrome.runtime) {
 
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === WATCHDOG_ALARM) watchdogTick();
-    if (alarm.name === AUTO_SYNC_ALARM) autoSyncTick();
+    // autoSyncTick can genuinely reject (tabs.create with no browser window
+    // open); swallow it here so it retries on the next check instead of
+    // surfacing as an unhandled rejection in the worker.
+    if (alarm.name === AUTO_SYNC_ALARM) autoSyncTick().catch(() => {});
   });
 
   // Both fire scheduleAutoSync so the staleness alarm exists from install

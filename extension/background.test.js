@@ -635,6 +635,49 @@ test("autoSyncTick opens the page for a stale user — inactive, flagged auto", 
   assert.deepEqual(tabCalls.created, [
     { url: "chrome-extension://aiscan/app.html?auto=1", active: false },
   ]);
+  // The attempt itself is stamped, successful or not — it gates the next open.
+  assert.ok(Date.now() - store.lastAutoOpenAt < 5000);
+});
+
+test("a recent abandoned attempt holds reopening for a full window", async (t) => {
+  // The user cancelled (or never finished) the last auto-run and closed the
+  // tab: coverage is still stale, but the tab must not pop again until the
+  // weekly attempt clock has elapsed too — weekly nudges, not daily nagging.
+  const { store, tabCalls } = mockEnv(t);
+  store.lastSyncedAt = Date.now() - 8 * 24 * 60 * 60_000;
+  store.lastAutoOpenAt = Date.now() - 24 * 60 * 60_000;
+  await autoSyncTick();
+  assert.equal(tabCalls.created.length, 0);
+});
+
+test("the attempt clock elapsing reopens the page for still-stale coverage", async (t) => {
+  const { store, tabCalls } = mockEnv(t);
+  store.lastSyncedAt = Date.now() - 15 * 24 * 60 * 60_000;
+  store.lastAutoOpenAt = Date.now() - 8 * 24 * 60 * 60_000;
+  await autoSyncTick();
+  assert.equal(tabCalls.created.length, 1);
+  // The clock is re-stamped, or the next 6h check would reopen the tab.
+  assert.ok(Date.now() - store.lastAutoOpenAt < 5000);
+});
+
+test("a failed tab creation does not consume the weekly attempt window", async (t) => {
+  const { store } = mockEnv(t);
+  store.lastSyncedAt = Date.now() - 8 * 24 * 60 * 60_000;
+  global.chrome.tabs.create = async () => {
+    throw new Error("no browser window");
+  };
+  await autoSyncTick().catch(() => {}); // the alarm listener swallows this too
+  assert.equal(store.lastAutoOpenAt, undefined); // next check retries
+});
+
+test("a future-dated attempt stamp cannot suppress auto-opens", async (t) => {
+  // A backwards clock jump (NTP, VM restore) can leave stamps in the future;
+  // they must read as stale, and the fresh stamp self-heals the state.
+  const { store, tabCalls } = mockEnv(t);
+  store.lastSyncedAt = Date.now() - 8 * 24 * 60 * 60_000;
+  store.lastAutoOpenAt = Date.now() + 60 * 60_000;
+  await autoSyncTick();
+  assert.equal(tabCalls.created.length, 1);
 });
 
 test("autoSyncTick does nothing while coverage is fresh", async (t) => {
